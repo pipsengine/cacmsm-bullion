@@ -1,0 +1,12 @@
+[project]
+name = "cacsms_bullion_shared"
+version = "0.1.0"
+description = "Shared utilities and schemas for Cacsms-Bullion (prod starter)"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.6.0",
+  "PyYAML>=6.0.1",
+  "redis>=5.0.0",
+  "SQLAlchemy>=2.0.30",
+  "psycopg2-binary>=2.9.9",
+]

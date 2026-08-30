@@ -1,0 +1,44 @@
+global:
+  environment: local
+  log_level: INFO
+  json_logs: true
+
+services:
+  control-api:
+    redis_url: redis://redis:6379/0
+    control_key: control:running
+    mode_key: control:mode
+    kill_key: control:kill
+    admin_api_token:
+
+  market-data-service:
+    redis_url: redis://redis:6379/0
+    feed_mode: SIMULATOR
+    tick_ms: 250
+    symbol: XAUUSD
+    stream_market: stream:market
+    key_last_tick_ts: telemetry:last_tick_ts
+
+  decision-service:
+    redis_url: redis://redis:6379/0
+    symbol: XAUUSD
+    stream_market: stream:market
+    stream_decisions: stream:decisions
+    key_last_decision_ts: telemetry:last_decision_ts
+    key_last_market_id: telemetry:last_market_id:decision-service
+
+  execution-service:
+    redis_url: redis://redis:6379/0
+    route_mode: SIMULATOR
+    symbol: XAUUSD
+    stream_decisions: stream:decisions
+    stream_orders: stream:orders
+    stream_executions: stream:executions
+    key_last_exec_ts: telemetry:last_execution_ts
+    key_last_decision_id: telemetry:last_decision_id:execution-service
+    max_order_size: 0.10
+
+  monitoring-service:
+    redis_url: redis://redis:6379/0
+    key_last_tick_ts: telemetry:last_tick_ts
+    key_last_decision_ts: telemetry:last_decision_ts

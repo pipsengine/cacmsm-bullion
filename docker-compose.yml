@@ -1,0 +1,133 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      - POSTGRES_USER=cacsms
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-cacsms_dev_password}
+      - POSTGRES_DB=cacsms_bullion
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cacsms -d cacsms_bullion"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  control-api:
+    build:
+      context: .
+      dockerfile: services/control-api/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CONFIG_FILE=/app/config/base.yaml
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+  market-data-service:
+    build:
+      context: .
+      dockerfile: services/market-data-service/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CONFIG_FILE=/app/config/base.yaml
+    ports:
+      - "127.0.0.1:8001:8001"
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+  decision-service:
+    build:
+      context: .
+      dockerfile: services/decision-service/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CONFIG_FILE=/app/config/base.yaml
+      - DB_ENABLED=1
+      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:-cacsms_dev_password}@postgres:5432/cacsms_bullion
+    ports:
+      - "127.0.0.1:8002:8002"
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+  execution-service:
+    build:
+      context: .
+      dockerfile: services/execution-service/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CONFIG_FILE=/app/config/base.yaml
+      - DB_ENABLED=1
+      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:-cacsms_dev_password}@postgres:5432/cacsms_bullion
+    ports:
+      - "127.0.0.1:8003:8003"
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+  monitoring-service:
+    build:
+      context: .
+      dockerfile: services/monitoring-service/Dockerfile
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - CONFIG_FILE=/app/config/base.yaml
+    ports:
+      - "127.0.0.1:8004:8004"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  web:
+    build: ./apps/web
+    environment:
+      - CONTROL_API_URL=http://control-api:8000
+      - DECISION_API_URL=http://decision-service:8002
+      - EXECUTION_API_URL=http://execution-service:8003
+      - MONITORING_API_URL=http://monitoring-service:8004
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - control-api
+      - decision-service
+      - execution-service
+      - monitoring-service
+    volumes:
+      - ./config:/app/config:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:
