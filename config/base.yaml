@@ -15,9 +15,27 @@ services:
     redis_url: redis://redis:6379/0
     feed_mode: SIMULATOR
     tick_ms: 250
-    symbol: XAUUSD
+    symbols:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - AUDUSD
+      - NZDUSD
+      - USDCAD
+      - USDCHF
+      - XAUUSD
+    tick_db_path: data/market_ticks.sqlite3
+    history_hours: 24
+    display_tz: Africa/Lagos
+    mt5_path:
+    mt5_login:
+    mt5_server:
+    mt5_password:
+    mt5_timeout_ms: 15000
     stream_market: stream:market
     key_last_tick_ts: telemetry:last_tick_ts
+    control_key: control:running
+    kill_key: control:kill
 
   decision-service:
     redis_url: redis://redis:6379/0

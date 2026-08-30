@@ -4,33 +4,38 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const CURRENCIES = ["AUD", "CAD", "EUR", "NZD", "GBP", "USD", "CHF", "JPY", "XAU"] as const;
 const TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"] as const;
-const TICKER_PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "XAUUSD"] as const;
-type TickerPair = (typeof TICKER_PAIRS)[number];
+
 type Currency = (typeof CURRENCIES)[number];
 type Tf = (typeof TIMEFRAMES)[number];
 
-const TICKER_BASE: Record<TickerPair, number> = {
-  EURUSD: 1.0845,
-  GBPUSD: 1.2716,
-  USDJPY: 147.22,
-  AUDUSD: 0.6648,
-  USDCAD: 1.3562,
-  USDCHF: 0.8913,
-  XAUUSD: 2526.4
+type SymbolTick = {
+  symbol: string;
+  bid?: number;
+  ask?: number;
+  spread?: number;
+  mid?: number;
+  ts_utc?: string;
+  ts_display?: string;
+  source?: string;
 };
 
-type PairState = { price: number; delta: number };
+type MatrixRow = { currency: Currency; values: Record<Tf, number> };
 
-const seededValue = (row: number, col: number) => {
-  const wave = Math.sin((row + 1) * 0.9 + col * 0.55) * 0.22;
-  const bias = (row - 3.8) * 0.028 + (col - 6) * 0.012;
-  return Number((wave + bias).toFixed(4));
+type Snapshot = {
+  ts_utc?: string;
+  ts_display?: string;
+  feed_source?: "SIM" | "MT5" | "OFF" | string;
+  mt5_connected?: boolean;
+  mt5_error?: string | null;
+  total_ticks?: number;
+  symbols?: SymbolTick[];
+  currency_values?: Record<Currency, number>;
+  matrix_rows?: MatrixRow[];
+  ranked_bias?: { currency: Currency; avg_bias: number }[];
 };
 
 const trendFromValue = (v: number) => (v > 0.045 ? "UP" : v < -0.045 ? "DOWN" : "FLAT");
 const cellClass = (v: number) => (v > 0.02 ? "positive" : v < -0.02 ? "negative" : "neutral");
-
-type Ranked = { currency: Currency; avg: number };
 
 const STYLES = `
   .mxPage{ color:#ecf3ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -45,7 +50,12 @@ const STYLES = `
     box-shadow:0 12px 30px rgba(0,0,0,0.28); font-size:0.92rem; font-weight:600;
   }
   .mxNavLink:hover{ border-color:#6785bf; cursor:pointer; }
+  .mxChipOk{ border-color:#2a7a48; }
+  .mxChipWarn{ border-color:#a87a1a; }
+  .mxChipErr{ border-color:#a22; }
   .mxDot{ width:10px; height:10px; border-radius:50%; background:#48d976; box-shadow:0 0 10px rgba(72,217,118,0.9); }
+  .mxDotWarn{ background:#f5c24a; box-shadow:0 0 10px rgba(245,194,74,0.9); }
+  .mxDotErr{ background:#ef5350; box-shadow:0 0 10px rgba(239,83,80,0.9); }
   .mxPanel{
     background:linear-gradient(180deg, rgba(26,41,66,0.92), rgba(12,22,39,0.96));
     border:1px solid #32456a; border-radius:18px; overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,0.28);
@@ -98,88 +108,130 @@ const STYLES = `
   .mxMuted{ color:#91a5c9; }
   .mxUp{ color:#65ea8b; }
   .mxDown{ color:#ff8282; }
+  .mxBanner{
+    padding:12px 16px; border-radius:12px; margin-bottom:14px;
+    border:1px solid #a87a1a; background:rgba(210,160,60,0.12); color:#ffd88a;
+    font-size:0.92rem;
+  }
+  .mxBannerErr{
+    border-color:#a22; background:rgba(220,70,70,0.12); color:#ff9e9e;
+  }
   @media (max-width:1120px){ .mxGrid{ grid-template-columns:1fr; } }
   @media (prefers-reduced-motion: reduce){
     .mxTable td{ transition:none; }
   }
 `;
 
-export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: () => void }) {
-  const [state, setState] = useState<Record<Currency, Record<Tf, number>>>(() => {
-    const s = {} as Record<Currency, Record<Tf, number>>;
-    CURRENCIES.forEach((ccy, rIdx) => {
-      s[ccy] = {} as Record<Tf, number>;
-      TIMEFRAMES.forEach((tf, cIdx) => {
-        s[ccy][tf] = seededValue(rIdx, cIdx);
-      });
+function precisionFor(sym: string): number {
+  if (sym === "XAUUSD") return 2;
+  if (sym.includes("JPY")) return 3;
+  return 4;
+}
+
+function formatLagosTime(ts?: string): string {
+  if (!ts) return "-";
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleString(undefined, {
+      year: undefined,
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
     });
-    return s;
-  });
+  } catch {
+    return ts;
+  }
+}
 
+const EMPTY_MATRIX: Record<Currency, Record<Tf, number>> = (() => {
+  const s = {} as Record<Currency, Record<Tf, number>>;
+  for (const c of CURRENCIES) {
+    s[c] = {} as Record<Tf, number>;
+    for (const tf of TIMEFRAMES) s[c][tf] = 0;
+  }
+  return s;
+})();
+
+export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: () => void }) {
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [updated, setUpdated] = useState<Record<string, number>>({});
-  const [pairState, setPairState] = useState<Record<TickerPair, PairState>>(() => {
-    const o = {} as Record<TickerPair, PairState>;
-    for (const p of TICKER_PAIRS) o[p] = { price: TICKER_BASE[p], delta: 0 };
-    return o;
-  });
+  const tickRef = useRef(0);
+  const prevMatrixRef = useRef<Record<Currency, Record<Tf, number>>>(EMPTY_MATRIX);
+  const symPrevRef = useRef<Record<string, number>>({});
 
-  const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
-  const updatedCounterRef = useRef(0);
-  const [refreshRate] = useState(1200);
+  const matrixState: Record<Currency, Record<Tf, number>> = useMemo(() => {
+    if (!snapshot?.matrix_rows) return prevMatrixRef.current;
+    const out = { ...prevMatrixRef.current };
+    for (const row of snapshot.matrix_rows) {
+      out[row.currency as Currency] = row.values as Record<Tf, number>;
+    }
+    return out;
+  }, [snapshot]);
 
-  const ranked = useMemo<Ranked[]>(() => {
-    return CURRENCIES.map((ccy) => {
-      const avg = TIMEFRAMES.reduce((sum, tf) => sum + state[ccy][tf], 0) / TIMEFRAMES.length;
-      return { currency: ccy, avg };
-    })
-      .sort((a, b) => b.avg - a.avg)
-      .slice(0, 6);
-  }, [state]);
+  useEffect(() => {
+    prevMatrixRef.current = matrixState;
+  }, [matrixState]);
+
+  const symbolsByKey: Record<string, SymbolTick> = useMemo(() => {
+    const out: Record<string, SymbolTick> = {};
+    for (const s of snapshot?.symbols ?? []) out[s.symbol] = s;
+    return out;
+  }, [snapshot]);
 
   useEffect(() => {
     let alive = true;
-    const id = setInterval(() => {
-      if (!alive) return;
-      const xauDelta = pairState.XAUUSD.delta;
-      const newState: Record<Currency, Record<Tf, number>> = {} as any;
-      const nowUpdated: Record<string, number> = {};
-      const tick = ++updatedCounterRef.current;
-      const timeNow = Date.now();
-      CURRENCIES.forEach((ccy, rIdx) => {
-        newState[ccy] = {} as Record<Tf, number>;
-        TIMEFRAMES.forEach((tf, cIdx) => {
-          const cur = state[ccy][tf];
-          const volatility =
-            tf === "TICK" ? 0.045 : tf.startsWith("M") ? 0.03 : tf.startsWith("H") ? 0.022 : 0.016;
-          const drift = Math.sin(timeNow / 6000 + rIdx * 0.7 + cIdx * 0.35) * 0.006;
-          const noise = (Math.random() - 0.5) * volatility;
-          const xauBias = ccy === "XAU" ? (xauDelta * 0.012) + Math.sin(timeNow / 3000 + cIdx) * 0.01 : 0;
-          const next = Number((cur + drift + noise + xauBias).toFixed(4));
-          newState[ccy][tf] = next;
-          if (Math.abs(next - cur) >= 0.005) nowUpdated[`${ccy}:${tf}`] = tick;
-        });
-      });
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-      const nextPairs: Record<TickerPair, PairState> = {} as any;
-      for (const p of TICKER_PAIRS) {
-        const step = p === "XAUUSD" ? 1.1 : p.includes("JPY") ? 0.025 : 0.00035;
-        const move = (Math.random() - 0.5) * step * 2;
-        const prev = pairState[p];
-        nextPairs[p] = { price: prev.price + move, delta: move };
+    async function fetchOnce() {
+      try {
+        const res = await fetch("/api/market/snapshot", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as Snapshot;
+        if (!alive) return;
+        tickRef.current += 1;
+        const tick = tickRef.current;
+        const nowUpdated: Record<string, number> = {};
+        for (const c of CURRENCIES) {
+          for (const tf of TIMEFRAMES) {
+            const prev = prevMatrixRef.current?.[c]?.[tf] ?? 0;
+            const next = (data.matrix_rows?.find((r) => r.currency === c)?.values?.[tf]) ?? prev;
+            if (Math.abs(next - prev) >= 0.005) nowUpdated[`${c}:${tf}`] = tick;
+          }
+        }
+        setUpdated(nowUpdated);
+        setSnapshot(data);
+        setError(null);
+        setLoading(false);
+      } catch (e: any) {
+        if (!alive) return;
+        setError(e?.message ?? "Failed to load snapshot");
+        setLoading(false);
       }
+    }
 
-      setPairState(nextPairs);
-      setState(newState);
-      setUpdated(nowUpdated);
-      setLastUpdate(new Date());
-    }, refreshRate);
+    fetchOnce();
+    pollTimer = setInterval(fetchOnce, 750);
+
     return () => {
       alive = false;
-      clearInterval(id);
+      if (pollTimer) clearInterval(pollTimer);
     };
-  }, [state, pairState, refreshRate]);
+  }, []);
 
-  const currentTick = updatedCounterRef.current;
+  const feedBadgeKind = (() => {
+    if (!snapshot) return { label: "LOADING", kind: "warn" as const };
+    if (snapshot.mt5_connected) return { label: "MT5 LIVE", kind: "ok" as const };
+    if (snapshot.feed_source === "MT5" && !snapshot.mt5_connected) return { label: "MT5 RECONNECTING", kind: "warn" as const };
+    if (snapshot.feed_source === "SIM") return { label: "SIM FALLBACK", kind: "warn" as const };
+    return { label: "OFFLINE", kind: "err" as const };
+  })();
+
+  const ranked = snapshot?.ranked_bias?.slice(0, 6) ?? [];
 
   return (
     <div className="mxPage" style={{ width: "min(1500px, calc(100% - 0px))", margin: "0 auto 36px" }}>
@@ -188,20 +240,36 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
         <div>
           <h1>CACSMS Bullion Market Matrix</h1>
           <p>
-            Download-ready matrix page for the bullion system. It includes `TICK`, `H6`, `H8`, `H12`, and an `XAU` row
-            derived only from `XAUUSD`.
+            Live strength matrix across 9 currencies and 13 timeframes. XAU row is derived exclusively from XAUUSD. All
+            timestamps are rendered in Africa/Lagos.
           </p>
         </div>
         <div className="mxToolbar">
+          {(() => {
+            const chipKindCls =
+              feedBadgeKind.kind === "ok"
+                ? "mxChipOk"
+                : feedBadgeKind.kind === "warn"
+                  ? "mxChipWarn"
+                  : "mxChipErr";
+            const dotKindCls =
+              feedBadgeKind.kind === "ok"
+                ? ""
+                : feedBadgeKind.kind === "warn"
+                  ? "mxDotWarn"
+                  : "mxDotErr";
+            return (
+              <div className={`mxChip ${chipKindCls}`}>
+                <span className={`mxDot ${dotKindCls}`} />
+                <span>{feedBadgeKind.label}</span>
+              </div>
+            );
+          })()}
           <div className="mxChip">
-            <span className="mxDot" />
-            <span>Realtime demo feed</span>
+            Last update (Lagos) <strong>{formatLagosTime(snapshot?.ts_display)}</strong>
           </div>
           <div className="mxChip">
-            Refresh <strong>{refreshRate}ms</strong>
-          </div>
-          <div className="mxChip">
-            Last update <strong>{lastUpdate.toLocaleTimeString()}</strong>
+            Total ticks <strong>{snapshot?.total_ticks ?? 0}</strong>
           </div>
           {onOpenHistory ? (
             <button type="button" onClick={onOpenHistory} className="mxNavLink">
@@ -214,6 +282,16 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
           )}
         </div>
       </div>
+
+      {snapshot?.feed_source === "SIM" && (
+        <div className="mxBanner">
+          MT5 is not connected. Running on internal SIMULATOR fallback. Pages will auto-resume when MT5 bridge reconnects.
+          {snapshot.mt5_error ? ` — ${snapshot.mt5_error}` : ""}
+        </div>
+      )}
+      {error && !snapshot && (
+        <div className="mxBanner mxBannerErr">Market feed unreachable: {error}</div>
+      )}
 
       <div className="mxPanel">
         <div className="mxPanelHead">
@@ -235,9 +313,9 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
                 <tr key={ccy}>
                   <th scope="row">{ccy}</th>
                   {TIMEFRAMES.map((tf) => {
-                    const v = state[ccy][tf];
+                    const v = matrixState[ccy]?.[tf] ?? 0;
                     const cls = cellClass(v);
-                    const isUpdated = updated[`${ccy}:${tf}`] === currentTick;
+                    const isUpdated = updated[`${ccy}:${tf}`] === tickRef.current;
                     const clsName =
                       (cls === "positive"
                         ? "mxTdPositive"
@@ -268,21 +346,32 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
             <span>Reference pairs for current movement</span>
           </div>
           <div className="mxTickerStrip">
-            {TICKER_PAIRS.map((pair) => {
-              const precision = pair === "XAUUSD" ? 2 : pair.includes("JPY") ? 3 : 4;
-              const ps = pairState[pair];
-              const cls = ps.delta >= 0 ? "mxUp" : "mxDown";
+            {snapshot?.symbols?.map((t) => {
+              const sym = t.symbol;
+              const precision = precisionFor(sym);
+              const mid = Number(t.mid ?? 0);
+              const prev = symPrevRef.current[sym] ?? mid;
+              const delta = mid - prev;
+              if (mid !== 0) symPrevRef.current[sym] = mid;
+              const cls = delta >= 0 ? "mxUp" : "mxDown";
               return (
-                <div className="mxCard" key={pair}>
-                  <small>{pair}</small>
-                  <strong>{ps.price.toFixed(precision)}</strong>
+                <div className="mxCard" key={sym}>
+                  <small>
+                    {sym} · {t.source ?? "—"}
+                  </small>
+                  <strong>{mid.toFixed(precision)}</strong>
                   <em className={cls}>
-                    {ps.delta >= 0 ? "+" : ""}
-                    {ps.delta.toFixed(precision)}
+                    {delta >= 0 ? "+" : ""}
+                    {delta.toFixed(precision)}
                   </em>
                 </div>
               );
-            })}
+            }) ??
+              (loading ? (
+                <div className="mxMuted" style={{ padding: "12px" }}>
+                  Waiting for feed…
+                </div>
+              ) : null)}
           </div>
         </div>
 
@@ -297,32 +386,25 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
                 <div className="mxMetric" key={item.currency}>
                   <strong>{item.currency}</strong>
                   <span className="mxMuted">
-                    {item.avg >= 0 ? "+" : ""}
-                    {item.avg.toFixed(4)}
+                    {item.avg_bias >= 0 ? "+" : ""}
+                    {item.avg_bias.toFixed(4)}
                   </span>
                 </div>
               ))}
+              {ranked.length === 0 && <div className="mxMuted" style={{ padding: "12px" }}>No data yet.</div>}
             </div>
           </div>
 
           <div className="mxPanel">
             <div className="mxPanelHead">
-              <h2>Notes</h2>
-              <span>Integration hints</span>
+              <h2>Feed Status</h2>
+              <span>Bridge diagnostics</span>
             </div>
             <div className="mxMetrics">
-              <div className="mxCard">
-                <small>XAU rule</small>
-                <strong>`XAU` is driven from `XAUUSD` only</strong>
-              </div>
-              <div className="mxCard">
-                <small>Feed swap</small>
-                <strong>Replace the demo interval with your WebSocket or API layer</strong>
-              </div>
-              <div className="mxCard">
-                <small>Companion page</small>
-                <strong>Use the 24h history page for timestamp-first monitoring</strong>
-              </div>
+              <div className="mxMetric"><strong>Feed mode</strong><span className="mxMuted">{snapshot?.feed_source ?? "—"}</span></div>
+              <div className="mxMetric"><strong>MT5 connected</strong><span className="mxMuted">{snapshot?.mt5_connected ? "YES" : "NO"}</span></div>
+              <div className="mxMetric"><strong>Last update Lagos</strong><span className="mxMuted">{formatLagosTime(snapshot?.ts_display)}</span></div>
+              <div className="mxMetric"><strong>XAU source</strong><span className="mxMuted">XAUUSD only</span></div>
             </div>
           </div>
         </div>

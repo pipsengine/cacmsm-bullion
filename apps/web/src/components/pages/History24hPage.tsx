@@ -5,47 +5,43 @@ import React, { useEffect, useRef, useState } from "react";
 const CURRENCIES = ["AUD", "CAD", "EUR", "NZD", "GBP", "USD", "CHF", "JPY", "XAU"] as const;
 type Currency = (typeof CURRENCIES)[number];
 
-const ROW_INTERVAL_MIN = 5;
-const MAX_ROWS = 24 * 12; // 5-min intervals for 24 hours = 288 rows
-const LIVE_REFRESH_MS = 1200;
+const MAX_ROWS = 24 * 12;
 
 type HistoryRow = {
   key: string;
-  timestamp: Date;
+  timestamp_utc?: string;
+  timestamp_display?: string;
   values: Record<Currency, number>;
-  source: "SNAPSHOT" | "TICK";
+  source: string;
   flashTick?: number;
+};
+
+type HistoryResp = {
+  ts_utc?: string;
+  ts_display?: string;
+  feed_source?: string;
+  mt5_connected?: boolean;
+  mt5_error?: string | null;
+  history_hours?: number;
+  row_interval_seconds?: number;
+  currencies?: string[];
+  rows?: HistoryRow[];
+};
+
+type StatusResp = {
+  ts_utc?: string;
+  ts_display?: string;
+  feed_mode?: string;
+  feed_source?: string;
+  mt5_connected?: boolean;
+  mt5_error?: string | null;
+  missing_symbols?: string[];
+  last_tick_seconds_ago?: number | null;
+  history_hours?: number;
 };
 
 const cellClass = (v: number) => (v > 0.02 ? "positive" : v < -0.02 ? "negative" : "neutral");
 const signalText = (v: number) => (v > 0.045 ? "UP" : v < -0.045 ? "DOWN" : "FLAT");
-
-const seededValue = (rowIdx: number, ccIdx: number) => {
-  const wave = Math.sin(rowIdx * 0.26 + ccIdx * 0.9) * 0.18;
-  const bias = (ccIdx - 4) * 0.02;
-  return Number((wave + bias).toFixed(4));
-};
-
-const makeInitialRows = (): HistoryRow[] => {
-  const now = Date.now();
-  const rows: HistoryRow[] = [];
-  for (let i = 0; i < MAX_ROWS; i++) {
-    const ts = new Date(now - i * ROW_INTERVAL_MIN * 60 * 1000);
-    const values = {} as Record<Currency, number>;
-    CURRENCIES.forEach((ccy, ccIdx) => {
-      let val = seededValue(i, ccIdx);
-      if (ccy === "XAU") val = Number((val + Math.sin(i * 0.5) * 0.07).toFixed(4));
-      values[ccy] = val;
-    });
-    rows.push({
-      key: `${ts.getTime()}-${Math.random().toString(36).slice(2, 7)}`,
-      timestamp: ts,
-      values,
-      source: "SNAPSHOT"
-    });
-  }
-  return rows;
-};
 
 const STYLES = `
   .h24Page{ color:#edf4ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -60,7 +56,12 @@ const STYLES = `
     box-shadow:0 12px 30px rgba(0,0,0,0.28); font-size:0.92rem; font-weight:600;
   }
   .h24NavLink:hover{ border-color:#6785bf; cursor:pointer; }
+  .h24ChipOk{ border-color:#2a7a48; }
+  .h24ChipWarn{ border-color:#a87a1a; }
+  .h24ChipErr{ border-color:#a22; }
   .h24Dot{ width:10px; height:10px; border-radius:50%; background:#48d976; box-shadow:0 0 10px rgba(72,217,118,0.9); }
+  .h24DotWarn{ background:#f5c24a; box-shadow:0 0 10px rgba(245,194,74,0.9); }
+  .h24DotErr{ background:#ef5350; box-shadow:0 0 10px rgba(239,83,80,0.9); }
   .h24Panel{
     background:linear-gradient(180deg, rgba(26,41,66,0.92), rgba(12,22,39,0.96));
     border:1px solid #32456a; border-radius:18px; overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,0.28);
@@ -99,55 +100,99 @@ const STYLES = `
   .h24TdFlash{ box-shadow:inset 0 0 0 1px rgba(255,255,255,0.55), 0 0 0 2px rgba(126,178,255,0.28); }
   .h24Meta{ display:block; margin-top:4px; font-size:0.68rem; opacity:0.9; letter-spacing:0.05em; }
   .h24Footer{ padding:14px 18px 18px; color:#91a5c9; font-size:0.88rem; }
+  .h24Banner{
+    padding:12px 16px; border-radius:12px; margin-bottom:14px;
+    border:1px solid #a87a1a; background:rgba(210,160,60,0.12); color:#ffd88a;
+    font-size:0.92rem;
+  }
+  .h24BannerErr{
+    border-color:#a22; background:rgba(220,70,70,0.12); color:#ff9e9e;
+  }
   @media (prefers-reduced-motion: reduce){ .h24Table td{ transition:none; } }
 `;
 
-function formatTimestamp(d: Date) {
-  return d.toLocaleString([], {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  });
+function formatTimestamp(ts?: string): string {
+  if (!ts) return "-";
+  try {
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return ts;
+    return d.toLocaleString(undefined, {
+      year: "2-digit",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  } catch {
+    return ts;
+  }
+}
+
+function normalizeValues(v?: Record<string, number> | null): Record<Currency, number> {
+  const out = {} as Record<Currency, number>;
+  for (const c of CURRENCIES) out[c] = Number(v?.[c] ?? 0) || 0;
+  return out;
 }
 
 export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => void }) {
-  const [rows, setRows] = useState<HistoryRow[]>(() => makeInitialRows());
-  const [lastTick, setLastTick] = useState<Date>(() => new Date());
+  const [rows, setRows] = useState<HistoryRow[]>([]);
+  const [status, setStatus] = useState<StatusResp | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const flashCounterRef = useRef(0);
-  const [, forceTick] = useState(0);
+  const rowIntervalRef = useRef<number>(300);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setRows((prev) => {
-        const first = prev[0];
-        const now = new Date();
-        const nextValues = {} as Record<Currency, number>;
-        CURRENCIES.forEach((ccy, idx) => {
-          const cur = first.values[ccy];
-          const volatility = ccy === "XAU" ? 0.06 : 0.035;
-          const noise = (Math.random() - 0.5) * volatility;
-          const drift = Math.sin(Date.now() / 4000 + idx * 0.8) * 0.005;
-          nextValues[ccy] = Number((cur + drift + noise).toFixed(4));
-        });
-        const next: HistoryRow = {
-          key: `${now.getTime()}-${Math.random().toString(36).slice(2, 7)}`,
-          timestamp: now,
-          values: nextValues,
-          source: "TICK",
-          flashTick: ++flashCounterRef.current
-        };
-        const arr = [next, ...prev];
-        if (arr.length > MAX_ROWS) arr.pop();
-        return arr;
-      });
-      setLastTick(new Date());
-      forceTick((x) => (x + 1) % 1_000_000);
-    }, LIVE_REFRESH_MS);
-    return () => clearInterval(id);
+    let alive = true;
+    let poll: ReturnType<typeof setInterval> | null = null;
+
+    async function fetchAll() {
+      try {
+        const [histRes, statusRes] = await Promise.all([
+          fetch("/api/market/history?hours=24", { cache: "no-store" }),
+          fetch("/api/market/status", { cache: "no-store" }),
+        ]);
+        if (!histRes.ok) throw new Error(`history HTTP ${histRes.status}`);
+        if (!statusRes.ok) throw new Error(`status HTTP ${statusRes.status}`);
+        const hist = (await histRes.json()) as HistoryResp;
+        const stat = (await statusRes.json()) as StatusResp;
+        if (!alive) return;
+        rowIntervalRef.current = Number(hist.row_interval_seconds ?? 300);
+        flashCounterRef.current += 1;
+        const flash = flashCounterRef.current;
+        const nextRows = (hist.rows ?? []).slice(0, MAX_ROWS).map((r, i) => ({
+          ...r,
+          values: normalizeValues(r.values),
+          flashTick: i === 0 ? flash : undefined,
+        }));
+        setRows(nextRows);
+        setStatus(stat);
+        setError(null);
+        setLoading(false);
+      } catch (e: any) {
+        if (!alive) return;
+        setError(e?.message ?? "Failed to load history");
+        setLoading(false);
+      }
+    }
+
+    fetchAll();
+    poll = setInterval(fetchAll, 1500);
+
+    return () => {
+      alive = false;
+      if (poll) clearInterval(poll);
+    };
   }, []);
+
+  const feedBadgeKind = (() => {
+    if (!status) return { label: "LOADING", kind: "warn" as const };
+    if (status.mt5_connected) return { label: "MT5 LIVE", kind: "ok" as const };
+    if (status.feed_source === "MT5" && !status.mt5_connected) return { label: "MT5 RECONNECTING", kind: "warn" as const };
+    if (status.feed_source === "SIM") return { label: "SIM FALLBACK", kind: "warn" as const };
+    return { label: "OFFLINE", kind: "err" as const };
+  })();
 
   const latestFlashId = flashCounterRef.current;
 
@@ -158,14 +203,30 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         <div>
           <h1>CACSMS Bullion 24h Tick History</h1>
           <p>
-            24-hour rolling board with timestamp on the left, currencies as headers, newest ticks on top, and live
-            color-coded updates. `XAU` is included as `XAUUSD`-based analysis.
+            24-hour rolling board with 5-minute aggregated buckets. Newest row on top. All timestamps are Africa/Lagos.
+            XAU column is derived exclusively from XAUUSD.
           </p>
         </div>
         <div className="h24Toolbar">
-          <div className="h24Chip">
-            <span className="h24Dot" />
-            <span>Realtime demo feed</span>
+          <div
+            className={`h24Chip ${
+              feedBadgeKind.kind === "ok"
+                ? "h24ChipOk"
+                : feedBadgeKind.kind === "warn"
+                  ? "h24ChipWarn"
+                  : "h24ChipErr"
+            }`}
+          >
+            <span
+              className={`h24Dot ${
+                feedBadgeKind.kind === "ok"
+                  ? ""
+                  : feedBadgeKind.kind === "warn"
+                    ? "h24DotWarn"
+                    : "h24DotErr"
+              }`}
+            />
+            <span>{feedBadgeKind.label}</span>
           </div>
           <div className="h24Chip">
             Window <strong>Last 24 hours</strong>
@@ -174,7 +235,7 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
             Rows <strong>{rows.length}</strong>
           </div>
           <div className="h24Chip">
-            Last tick <strong>{lastTick.toLocaleTimeString()}</strong>
+            Last status (Lagos) <strong>{formatTimestamp(status?.ts_display)}</strong>
           </div>
           {onOpenMatrix ? (
             <button type="button" onClick={onOpenMatrix} className="h24NavLink">
@@ -188,6 +249,15 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         </div>
       </div>
 
+      {status?.feed_source === "SIM" && (
+        <div className="h24Banner">
+          MT5 is not connected; data is generated locally by the simulator. Pages will auto-resume when MT5 bridge
+          reconnects.
+          {status.mt5_error ? ` — ${status.mt5_error}` : ""}
+        </div>
+      )}
+      {error && rows.length === 0 && <div className="h24Banner h24BannerErr">Market feed unreachable: {error}</div>}
+
       <div className="h24Panel">
         <div className="h24PanelHead">
           <h2>Historical Tick Table</h2>
@@ -197,24 +267,34 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
           <table className="h24Table">
             <thead>
               <tr>
-                <th>Timestamp</th>
+                <th>Timestamp (Lagos)</th>
                 {CURRENCIES.map((c) => (
                   <th key={c}>{c}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
+              {rows.length === 0 && (
+                <tr>
+                  <th scope="row">{loading ? "Loading feed…" : "No data yet"}</th>
+                  {CURRENCIES.map((c) => (
+                    <td key={c} className="h24TdNeutral">
+                      <span className="h24Meta">—</span>
+                    </td>
+                  ))}
+                </tr>
+              )}
               {rows.map((row, idx) => {
                 const isLatest = idx === 0;
                 const cls = isLatest ? "h24Latest" : "";
                 return (
                   <tr key={row.key} className={cls}>
                     <th scope="row">
-                      {formatTimestamp(row.timestamp)}
+                      {formatTimestamp(row.timestamp_display ?? row.timestamp_utc)}
                       <span className="h24Meta">{row.source}</span>
                     </th>
                     {CURRENCIES.map((ccy) => {
-                      const v = row.values[ccy];
+                      const v = row.values?.[ccy] ?? 0;
                       const c = cellClass(v);
                       const clsName =
                         (c === "positive"
@@ -238,8 +318,8 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
           </table>
         </div>
         <div className="h24Footer">
-          Replace the simulated generator with your live feed and keep the same row insertion logic to preserve the
-          24-hour view.
+          Row aggregation interval: {rowIntervalRef.current / 60} minutes · History window: {status?.history_hours ?? 24}h
+          · Feed source: {status?.feed_source ?? "—"} · Missing symbols: {status?.missing_symbols?.length ?? 0}
         </div>
       </div>
     </div>

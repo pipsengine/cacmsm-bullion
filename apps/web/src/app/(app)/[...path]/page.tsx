@@ -6,6 +6,7 @@ import { findNavItem } from "../../../config/navigation";
 import { Card, JsonBlock, Kpi } from "../../../components/ui/Cards";
 import MarketMatrixPage from "../../../components/pages/MarketMatrixPage";
 import History24hPage from "../../../components/pages/History24hPage";
+import Mt5TerminalPage from "../../../components/pages/Mt5TerminalPage";
 
 type ControlStatus = { running: boolean; mode: string; kill: boolean };
 type HealthSummary = {
@@ -48,6 +49,9 @@ export default function AnyPage() {
   }
   if (pathname === "/market/history-24h") {
     return <History24hPage onOpenMatrix={goMatrix} />;
+  }
+  if (pathname === "/execution/mt5-terminal") {
+    return <Mt5TerminalPage />;
   }
 
   const info = useMemo(() => findNavItem(pathname), [pathname]);
@@ -162,20 +166,6 @@ export default function AnyPage() {
 
       {pathname === "/execution/execution-logs" ? (
         <Card title="Execution logs (latest)">{executions ? <JsonBlock data={executions} /> : <div>Loading...</div>}</Card>
-      ) : null}
-
-      {pathname === "/execution/mt5-terminal" ? (
-        <Card title="MT5 Terminal (MT5-first)">
-          <div style={{ color: "var(--muted)" }}>
-            This page is wired to platform state, but real MT5 connectivity runs on your Windows MT5 host.
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontWeight: 900 }}>Connector status</div>
-            <div style={{ color: "var(--muted)", marginTop: 6 }}>
-              Use `services/mt5-connector-worker` to connect and publish events to `stream:executions`.
-            </div>
-          </div>
-        </Card>
       ) : null}
 
       <Card title="Page implementation status">
