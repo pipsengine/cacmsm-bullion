@@ -1,0 +1,14 @@
+{
+  "name": "cacmsm-bullion",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @cacsms-bullion/web run dev",
+    "build:web": "npm --workspace @cacsms-bullion/web run build",
+    "start:web": "npm --workspace @cacsms-bullion/web run start",
+    "lint:web": "npm --workspace @cacsms-bullion/web run lint"
+  }
+}
