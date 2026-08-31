@@ -281,11 +281,20 @@ async function userExists(pool: ConnectionPool, dbName: string, userName: string
   return r2.recordset.length > 0;
 }
 
-const SCHEMA_STATEMENTS: string[] = [
-  `IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = N'mt5')
-   EXEC('CREATE SCHEMA [mt5] AUTHORIZATION [dbo]');`,
+const SCHEMA_TABLE_NAMES_IN_ORDER = [
+  "accounts",
+  "sync_runs",
+  "sync_logs",
+  "account_snapshots",
+  "positions",
+  "pending_orders",
+  "deals",
+] as const;
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'accounts')
+type Mt5TableName = (typeof SCHEMA_TABLE_NAMES_IN_ORDER)[number];
+
+const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
+  accounts: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'accounts')
    CREATE TABLE [mt5].[accounts] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [broker_name] NVARCHAR(128) NOT NULL,
@@ -322,7 +331,7 @@ const SCHEMA_STATEMENTS: string[] = [
      UNIQUE ([account_login], [account_server])
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'sync_runs')
+  sync_runs: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'sync_runs')
    CREATE TABLE [mt5].[sync_runs] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
@@ -349,7 +358,7 @@ const SCHEMA_STATEMENTS: string[] = [
      [gateway_info] NVARCHAR(1024) NULL
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'sync_logs')
+  sync_logs: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'sync_logs')
    CREATE TABLE [mt5].[sync_logs] (
      [id] BIGINT NOT NULL IDENTITY(1,1) PRIMARY KEY,
      [sync_run_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[sync_runs](id) ON DELETE SET NULL,
@@ -361,7 +370,7 @@ const SCHEMA_STATEMENTS: string[] = [
      [context_json] NVARCHAR(MAX) NULL CHECK (ISJSON([context_json])=0 OR ISJSON([context_json])=1)
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'account_snapshots')
+  account_snapshots: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'account_snapshots')
    CREATE TABLE [mt5].[account_snapshots] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
@@ -390,7 +399,7 @@ const SCHEMA_STATEMENTS: string[] = [
      [raw_json] NVARCHAR(MAX) NULL CHECK (ISJSON([raw_json])=0 OR ISJSON([raw_json])=1)
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'positions')
+  positions: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'positions')
    CREATE TABLE [mt5].[positions] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
@@ -421,7 +430,7 @@ const SCHEMA_STATEMENTS: string[] = [
      UNIQUE ([account_id], [ticket])
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'pending_orders')
+  pending_orders: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'pending_orders')
    CREATE TABLE [mt5].[pending_orders] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
@@ -445,7 +454,7 @@ const SCHEMA_STATEMENTS: string[] = [
      UNIQUE ([account_id], [ticket])
    );`,
 
-  `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'deals')
+  deals: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'deals')
    CREATE TABLE [mt5].[deals] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
@@ -471,28 +480,88 @@ const SCHEMA_STATEMENTS: string[] = [
      [synced_at] DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET(),
      UNIQUE ([account_id], [deal_ticket])
    );`,
+};
 
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_runs_account_id_started_at' AND object_id = OBJECT_ID(N'mt5.sync_runs'))
-   CREATE INDEX [IX_sync_runs_account_id_started_at] ON [mt5].[sync_runs] ([account_id] DESC, [started_at] DESC);`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_account_id_logged_at' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
-   CREATE INDEX [IX_sync_logs_account_id_logged_at] ON [mt5].[sync_logs] ([account_id] DESC, [logged_at] DESC);`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_sync_run_id' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
-   CREATE INDEX [IX_sync_logs_sync_run_id] ON [mt5].[sync_logs] ([sync_run_id] DESC, [logged_at] DESC);`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_account_snapshots_account_id_captured_at' AND object_id = OBJECT_ID(N'mt5.account_snapshots'))
-   CREATE INDEX [IX_account_snapshots_account_id_captured_at] ON [mt5].[account_snapshots] ([account_id] DESC, [captured_at] DESC);`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_positions_account_id_open_ts' AND object_id = OBJECT_ID(N'mt5.positions'))
-   CREATE INDEX [IX_positions_account_id_open_ts] ON [mt5].[positions] ([account_id] DESC, [open_ts] DESC) WHERE [is_open] = 1;`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_deals_account_id_deal_ts' AND object_id = OBJECT_ID(N'mt5.deals'))
-   CREATE INDEX [IX_deals_account_id_deal_ts] ON [mt5].[deals] ([account_id] DESC, [deal_ts] DESC);`,
-
-  `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_pending_orders_account_id_created_ts' AND object_id = OBJECT_ID(N'mt5.pending_orders'))
-   CREATE INDEX [IX_pending_orders_account_id_created_ts] ON [mt5].[pending_orders] ([account_id] DESC, [created_ts] DESC) WHERE [status] = 'OPEN';`
+const SCHEMA_INDEX_STATEMENTS: { name: string; table: Mt5TableName; sql: string }[] = [
+  {
+    name: "IX_sync_runs_account_id_started_at",
+    table: "sync_runs",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_runs_account_id_started_at' AND object_id = OBJECT_ID(N'mt5.sync_runs'))
+ CREATE INDEX [IX_sync_runs_account_id_started_at] ON [mt5].[sync_runs] ([account_id] DESC, [started_at] DESC);`,
+  },
+  {
+    name: "IX_sync_logs_account_id_logged_at",
+    table: "sync_logs",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_account_id_logged_at' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
+ CREATE INDEX [IX_sync_logs_account_id_logged_at] ON [mt5].[sync_logs] ([account_id] DESC, [logged_at] DESC);`,
+  },
+  {
+    name: "IX_sync_logs_sync_run_id",
+    table: "sync_logs",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_sync_run_id' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
+ CREATE INDEX [IX_sync_logs_sync_run_id] ON [mt5].[sync_logs] ([sync_run_id] DESC, [logged_at] DESC);`,
+  },
+  {
+    name: "IX_account_snapshots_account_id_captured_at",
+    table: "account_snapshots",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_account_snapshots_account_id_captured_at' AND object_id = OBJECT_ID(N'mt5.account_snapshots'))
+ CREATE INDEX [IX_account_snapshots_account_id_captured_at] ON [mt5].[account_snapshots] ([account_id] DESC, [captured_at] DESC);`,
+  },
+  {
+    name: "IX_positions_account_id_open_ts",
+    table: "positions",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_positions_account_id_open_ts' AND object_id = OBJECT_ID(N'mt5.positions'))
+ CREATE INDEX [IX_positions_account_id_open_ts] ON [mt5].[positions] ([account_id] DESC, [open_ts] DESC) WHERE [is_open] = 1;`,
+  },
+  {
+    name: "IX_deals_account_id_deal_ts",
+    table: "deals",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_deals_account_id_deal_ts' AND object_id = OBJECT_ID(N'mt5.deals'))
+ CREATE INDEX [IX_deals_account_id_deal_ts] ON [mt5].[deals] ([account_id] DESC, [deal_ts] DESC);`,
+  },
+  {
+    name: "IX_pending_orders_account_id_created_ts",
+    table: "pending_orders",
+    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_pending_orders_account_id_created_ts' AND object_id = OBJECT_ID(N'mt5.pending_orders'))
+ CREATE INDEX [IX_pending_orders_account_id_created_ts] ON [mt5].[pending_orders] ([account_id] DESC, [created_ts] DESC) WHERE [status] = 'OPEN';`,
+  },
 ];
+
+function sqlDropIfExists(tables: Mt5TableName[]): string {
+  // Drop in reverse dependency order so FK refs don't block us.
+  const reverse: Mt5TableName[] = [...tables].sort(
+    (a, b) => SCHEMA_TABLE_NAMES_IN_ORDER.indexOf(b) - SCHEMA_TABLE_NAMES_IN_ORDER.indexOf(a),
+  );
+  const parts: string[] = [];
+  for (const t of reverse) parts.push(`IF OBJECT_ID(N'mt5.${t}', N'U') IS NOT NULL DROP TABLE [mt5].[${t}];`);
+  return parts.join("\n");
+}
+
+async function rebuildTables(pool: ConnectionPool, tables: Mt5TableName[]): Promise<void> {
+  await pool.request().query(sqlDropIfExists(tables));
+  // Re-create in forward dependency order.
+  for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
+    if (tables.includes(t)) {
+      await pool.request().query(SCHEMA_CREATE_TABLE_BY_NAME[t]);
+    }
+  }
+  for (const ix of SCHEMA_INDEX_STATEMENTS) {
+    if (tables.includes(ix.table)) {
+      await pool.request().query(ix.sql);
+    }
+  }
+}
+
+function tablesReferencedInErrorMessage(err: any): Mt5TableName[] {
+  const msg: string = String((err as any)?.message ?? err ?? "").toLowerCase();
+  const hits: Mt5TableName[] = [];
+  for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
+    if (msg.includes(`[mt5].[${t}]`) || msg.includes(`mt5.${t}`) || msg.includes(`'${t}'`)) {
+      if (!hits.includes(t)) hits.push(t);
+    }
+  }
+  return hits;
+}
 
 async function ensureDatabaseAndUser(): Promise<void> {
   const pool = await getMasterPool();
@@ -550,8 +619,34 @@ async function ensureDatabaseAndUser(): Promise<void> {
 }
 
 async function ensureSchema(pool: ConnectionPool): Promise<void> {
-  for (const stmt of SCHEMA_STATEMENTS) {
-    await pool.request().query(stmt);
+  await pool.request().query(
+    `IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = N'mt5')
+     EXEC('CREATE SCHEMA [mt5] AUTHORIZATION [dbo]');`,
+  );
+  for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
+    try {
+      await pool.request().query(SCHEMA_CREATE_TABLE_BY_NAME[t]);
+    } catch (e) {
+      const refs = tablesReferencedInErrorMessage(e);
+      if (!refs.length) throw e;
+      console.warn(`[mssql] ensureSchema: table "${t}" failed; repairing: ${refs.join(", ")}`);
+      await rebuildTables(pool, refs);
+    }
+  }
+  const brokenTables = new Set<Mt5TableName>();
+  for (const ix of SCHEMA_INDEX_STATEMENTS) {
+    try {
+      await pool.request().query(ix.sql);
+    } catch (e) {
+      const refs = tablesReferencedInErrorMessage(e);
+      for (const r of refs) brokenTables.add(r);
+      if (!refs.includes(ix.table)) brokenTables.add(ix.table);
+    }
+  }
+  if (brokenTables.size) {
+    const toFix = Array.from(brokenTables);
+    console.warn(`[mssql] ensureSchema: rebuilding ${toFix.join(", ")} to repair schema`);
+    await rebuildTables(pool, toFix);
   }
 }
 

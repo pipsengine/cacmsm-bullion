@@ -87,15 +87,34 @@ type SyncSummary = {
   oldest_sync_age_ms?: number | null;
 };
 
-type ControlStatus = { running: boolean; mode: string; kill: boolean };
+type ControlStatusModeShape = string | { active?: string | null; envelope?: string | null } | null | undefined;
+type ControlStatus = {
+  running?: boolean | null;
+  kill?: boolean | null;
+  mode?: ControlStatusModeShape;
+  status?: string | null;
+  routing?: string | { primary_symbol?: string; routing_mode?: string } | null;
+};
 type HealthSummary = {
-  running: boolean;
-  mode: string;
-  kill: boolean;
+  running?: boolean | null;
+  mode?: ControlStatusModeShape;
+  kill?: boolean | null;
   last_tick_age_ms: number | null;
   last_decision_age_ms: number | null;
   notes: string[];
 };
+
+function toActiveMode(mode: ControlStatusModeShape, fallback = "DEMO"): string {
+  if (mode == null) return fallback.toUpperCase();
+  if (typeof mode === "string") return mode.toUpperCase();
+  if (typeof mode.active === "string") return mode.active.toUpperCase();
+  return fallback.toUpperCase();
+}
+
+function safeUpper(s: unknown, fallback = ""): string {
+  if (typeof s === "string") return s.toUpperCase();
+  return fallback;
+}
 
 const STYLES = `
   .masPage{ color:#ecf3ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; width:min(1760px, 100%); margin:0 auto 48px; }
@@ -720,11 +739,63 @@ export default function Mt5AccountSyncPage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorDiagnostics, setErrorDiagnostics] = useState<MssqlDiagnostics | null>(null);
+  const [currentErrorHash, setCurrentErrorHash] = useState<string>("");
+  const [bannerOpen, setBannerOpen] = useState<boolean>(false);
   const [toast, setToast] = useState<{ type: "ok" | "err"; message: string } | null>(null);
   const [tab, setTab] = useState<"details" | "runs" | "logs">("details");
   const [filters, setFilters] = useState<{ modes: AccountMode[]; statuses: AccountStatus[] }>({ modes: [], statuses: [] });
 
   const syncingIdsRef = useRef<Set<string>>(new Set());
+
+  const LS_DISMISSED = "mas.errors.dismissed.v1";
+  const hashString = (s: string): string => {
+    let h1 = 0x811c9dc5, h2 = 0xdeadbeef;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 2654435761) >>> 0;
+      h2 = Math.imul(h2 ^ c, 1597334677) >>> 0;
+    }
+    return ((h1 >>> 0).toString(16) + (h2 >>> 0).toString(16)).slice(0, 12);
+  };
+  const getDismissedHashes = (): Set<string> => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const raw = window.localStorage.getItem(LS_DISMISSED);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr.filter((x: any) => typeof x === "string") : []);
+    } catch { return new Set(); }
+  };
+  const addDismissedHash = (hash: string) => {
+    if (typeof window === "undefined" || !hash) return;
+    try {
+      const next = Array.from(getDismissedHashes().add(hash)).slice(-64);
+      window.localStorage.setItem(LS_DISMISSED, JSON.stringify(next));
+    } catch { /* noop */ }
+  };
+  const errorInfo = useMemo(() => {
+    const hash = error
+      ? hashString(`${error}|${JSON.stringify(errorDiagnostics?.last_error ?? null)}|${JSON.stringify(errorDiagnostics?.schema_ok ?? null)}`)
+      : "";
+    const dismissed = getDismissedHashes();
+    return {
+      hash,
+      hasError: !!error,
+      dismissed: hash ? dismissed.has(hash) : true,
+      newBadge: hash && !dismissed.has(hash) ? 1 : 0,
+    };
+  }, [error, errorDiagnostics]);
+
+  useEffect(() => {
+    if (errorInfo.hash && errorInfo.hash !== currentErrorHash) {
+      setCurrentErrorHash(errorInfo.hash);
+    }
+  }, [errorInfo.hash, currentErrorHash]);
+
+  const dismissCurrent = () => {
+    addDismissedHash(errorInfo.hash);
+    setBannerOpen(false);
+  };
 
   const showToast = (type: "ok" | "err", message: string) => {
     setToast({ type, message });
@@ -1012,7 +1083,7 @@ export default function Mt5AccountSyncPage() {
 
   const systemChips = useMemo(() => {
     const running = control?.kill ? "HALTED" : control?.running ? "RUNNING" : "STOPPED";
-    const mode = (control?.mode ?? "demo").toUpperCase();
+    const mode = toActiveMode(control?.mode, "DEMO");
     return [
       { label: running, cls: running === "RUNNING" ? "masChipOk" : running === "HALTED" ? "masChipErr" : "masChipWarn", dot: running === "RUNNING" ? "masDotOk" : running === "HALTED" ? "masDotErr" : "masDot", sub: "From Control API" },
       { label: mode, cls: mode === "LIVE" ? "masChipErr" : mode === "PROP" ? "masChipWarn" : "masChip", dot: "masDot", sub: "demo / prop / live policy envelope" },
@@ -1377,7 +1448,7 @@ export default function Mt5AccountSyncPage() {
                 <label>Currency</label>
                 <input
                   value={form.currency}
-                  onChange={(e) => setForm((f) => ({ ...f, currency: e.target.value.toUpperCase() }))}
+                  onChange={(e) => setForm((f) => ({ ...f, currency: safeUpper(e.target.value, f.currency) }))}
                   placeholder="USD, EUR, GBP…"
                 />
               </div>
