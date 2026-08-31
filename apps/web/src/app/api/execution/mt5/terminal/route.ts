@@ -716,12 +716,20 @@ class SimState {
 const simState = (globalThis as any).__cacsms_mt5_sim || ((globalThis as any).__cacsms_mt5_sim = new SimState());
 
 async function fetchJson(url: string) {
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) return null;
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 1500);
   try {
-    return (await r.json()) as any;
+    const r = await fetch(url, { cache: "no-store", signal: ctrl.signal });
+    if (!r.ok) return null;
+    try {
+      return (await r.json()) as any;
+    } catch {
+      return null;
+    }
   } catch {
     return null;
+  } finally {
+    clearTimeout(to);
   }
 }
 

@@ -1158,7 +1158,7 @@ export default function Mt5AccountSyncPage() {
         </div>
       ) : null}
 
-      {error && bannerOpen ? (
+      {!!error && bannerOpen === true ? (
         <div className="masBanner masBannerErr" style={{ marginBottom: 14, padding: "10px 14px", display: "block" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: errorDiagnostics ? 10 : 0 }}>
             <span style={{ fontWeight: 600, lineHeight: 1.4 }}>{error}</span>
