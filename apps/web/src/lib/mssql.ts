@@ -22,9 +22,158 @@ export const MSSQL_CONFIG = {
 
 export type AppDbConfig = typeof MSSQL_CONFIG;
 
+export type MssqlConnectionDiagnostics = {
+  ok: boolean;
+  initialized_at: string | null;
+  server_reachable: boolean | null;
+  tcp_ok: boolean | null;
+  sql_authentication_enabled: boolean | null;
+  admin_login_ok: boolean | null;
+  admin_reason: string | null;
+  database_exists: boolean | null;
+  app_login_exists: boolean | null;
+  app_user_ok: boolean | null;
+  schema_ok: boolean | null;
+  app_reason: string | null;
+  last_error: string | null;
+  config: {
+    server: string;
+    port: number;
+    database: string;
+    admin_user: string;
+    admin_password_set: boolean;
+    app_user: string;
+    app_password_set: boolean;
+    encrypt: boolean;
+    trust_cert: boolean;
+  };
+  recovery_steps: string[];
+};
+
 let masterPool: ConnectionPool | null = null;
 let appPool: ConnectionPool | null = null;
 let initPromise: Promise<ConnectionPool> | null = null;
+
+let lastDiagnostics: MssqlConnectionDiagnostics = {
+  ok: false,
+  initialized_at: null,
+  server_reachable: null,
+  tcp_ok: null,
+  sql_authentication_enabled: null,
+  admin_login_ok: null,
+  admin_reason: null,
+  database_exists: null,
+  app_login_exists: null,
+  app_user_ok: null,
+  schema_ok: null,
+  app_reason: null,
+  last_error: null,
+  config: {
+    server: MSSQL_CONFIG.server,
+    port: MSSQL_CONFIG.port,
+    database: MSSQL_CONFIG.database,
+    admin_user: MSSQL_CONFIG.user,
+    admin_password_set: !!MSSQL_CONFIG.password,
+    app_user: MSSQL_CONFIG.appUser,
+    app_password_set: !!MSSQL_CONFIG.appPassword,
+    encrypt: !!MSSQL_CONFIG.options.encrypt,
+    trust_cert: !!MSSQL_CONFIG.options.trustServerCertificate,
+  },
+  recovery_steps: [],
+};
+
+function classifyMssqlError(err: any): { code: string | null; isTcp: boolean; isLogin: boolean; reason: string } {
+  const message: string = (err?.message ?? String(err ?? "")).toString();
+  const rawCode: string | null =
+    (err as any)?.code ??
+    (err as any)?.cause?.code ??
+    (err as any)?.originalError?.code ??
+    null;
+  const number: number | null =
+    (err as any)?.number ??
+    (err as any)?.originalError?.info?.number ??
+    null;
+  const state: number | null =
+    (err as any)?.state ??
+    (err as any)?.originalError?.info?.state ??
+    null;
+  const isTcp =
+    !!rawCode && ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"].includes(rawCode) ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("Connection refused") ||
+    message.includes("Failed to connect to") ||
+    message.includes("Server name cannot be determined");
+  const isLogin =
+    number === 18456 ||
+    message.includes("Login failed for user") ||
+    (number === 233 && state === 0) /* Login handshake failure (SQL auth disabled) */ ||
+    /login\s+failed/i.test(message);
+  return {
+    code: rawCode,
+    isTcp,
+    isLogin,
+    reason: message.slice(0, 400),
+  };
+}
+
+function buildRecoverySteps(d: MssqlConnectionDiagnostics): string[] {
+  const steps: string[] = [];
+  const envBlock =
+    `MSSQL_SERVER=${MSSQL_CONFIG.server}\n` +
+    `MSSQL_PORT=${MSSQL_CONFIG.port}\n` +
+    `MSSQL_ADMIN_USER=sa\n` +
+    `MSSQL_ADMIN_PASSWORD=<your-sa-password>\n` +
+    `MSSQL_DATABASE=${MSSQL_CONFIG.database}\n` +
+    `MSSQL_APP_USER=${MSSQL_CONFIG.appUser}\n` +
+    `MSSQL_APP_PASSWORD=${MSSQL_CONFIG.appPassword}\n` +
+    `MSSQL_ENCRYPT=false\n` +
+    `MSSQL_TRUST_CERT=true`;
+
+  if (d.tcp_ok === false) {
+    steps.push(`SQL Server is unreachable at ${MSSQL_CONFIG.server}:${MSSQL_CONFIG.port}.`);
+    steps.push("Confirm the SQL Server service is RUNNING (services.msc → SQL Server (MSSQLSERVER) or SQLEXPRESS).");
+    steps.push("Confirm TCP/IP is enabled: Sql Server Configuration Manager → SQL Server Network Config → Protocols → TCP/IP = Enabled, and IPAll TCP Port = 1433. Restart SQL Server service.");
+    steps.push("If using a named instance (e.g. SQLEXPRESS): set MSSQL_PORT to the dynamic port found in SQL Server Error Log, or set MSSQL_SERVER=localhost\\SQLEXPRESS and enable SQL Server Browser service.");
+    steps.push("Allow TCP 1433 inbound in Windows Firewall (wf.msc → Inbound Rules → New Rule → Port 1433 TCP).");
+  }
+  if (d.sql_authentication_enabled === false) {
+    steps.push("SQL Server is rejecting logins with number=233 state=0. This usually means Mixed-Mode (SQL + Windows) authentication is DISABLED.");
+    steps.push("Enable Mixed-Mode: SSMS → Right-click Server → Properties → Security → Server authentication → 'SQL Server and Windows Authentication mode' → OK → Restart SQL Server service.");
+  }
+  if (d.admin_login_ok === false) {
+    if (!MSSQL_CONFIG.password) {
+      steps.push("MSSQL_ADMIN_PASSWORD is empty. The app cannot bootstrap the database + app login without SA-equivalent credentials.");
+    } else {
+      steps.push(`Admin login '${MSSQL_CONFIG.user}' failed. Verify the SA (or admin) password, or grant your admin login ALTER ANY LOGIN + CREATE ANY DATABASE permissions.`);
+    }
+    steps.push("Paste this into apps/web/.env.local (create the file if missing), then restart the dev server:");
+    steps.push(envBlock);
+    steps.push("If you don't know the SA password, you can either (a) reset it via SSMS logged in as Windows admin, or (b) pre-create the database + login by running a manual SQL script instead of auto-bootstrap.");
+  }
+  if (d.admin_login_ok === true && d.app_user_ok === false && d.server_reachable === true) {
+    steps.push("Admin auto-create ran but the app login still failed.");
+    steps.push("Verify the app login was actually created: run from SSMS → SELECT name FROM sys.sql_logins WHERE name = N'" + MSSQL_CONFIG.appUser + "';");
+    steps.push("If missing, run from SSMS: CREATE LOGIN [" + MSSQL_CONFIG.appUser + "] WITH PASSWORD = N'" + MSSQL_CONFIG.appPassword + "', CHECK_POLICY=OFF, DEFAULT_DATABASE=[" + MSSQL_CONFIG.database + "]; USE [" + MSSQL_CONFIG.database + "]; CREATE USER [" + MSSQL_CONFIG.appUser + "] FOR LOGIN [" + MSSQL_CONFIG.appUser + "]; ALTER ROLE [db_owner] ADD MEMBER [" + MSSQL_CONFIG.appUser + "];");
+  }
+  if (d.app_user_ok === true && d.schema_ok === false) {
+    steps.push("Connected but schema creation failed. Open /api/mt5-account-sync/_diag for the detailed error, or run the SCHEMA_STATEMENTS SQL block in apps/web/src/lib/mssql.ts manually from SSMS under the cacsms user.");
+  }
+  if (!steps.length && d.ok === false) {
+    steps.push("General connection check. Ensure apps/web/.env.local contains the block below, matches your local SQL Server, then restart the dev server:");
+    steps.push(envBlock);
+  }
+  return steps;
+}
+
+export function getConnectionDiagnostics(): MssqlConnectionDiagnostics {
+  return { ...lastDiagnostics, recovery_steps: buildRecoverySteps(lastDiagnostics) };
+}
+
+function setDiag(patch: Partial<MssqlConnectionDiagnostics>): void {
+  lastDiagnostics = { ...lastDiagnostics, ...patch };
+  lastDiagnostics.recovery_steps = buildRecoverySteps(lastDiagnostics);
+}
 
 function adminConfig(): SqlConfig {
   return {
@@ -53,12 +202,49 @@ function appConfig(): SqlConfig {
 async function getMasterPool(): Promise<ConnectionPool> {
   if (masterPool && masterPool.connected) return masterPool;
   if (masterPool && masterPool.connecting) {
-    await masterPool.connect();
-    return masterPool;
+    try {
+      await masterPool.connect();
+      return masterPool;
+    } catch (e) {
+      const cls = classifyMssqlError(e);
+      if (cls.isTcp) setDiag({ tcp_ok: false, server_reachable: false, admin_login_ok: false, admin_reason: cls.reason, last_error: cls.reason });
+      else if (cls.isLogin) setDiag({
+        tcp_ok: true,
+        server_reachable: true,
+        sql_authentication_enabled: ((e as any)?.number ?? 0) !== 233,
+        admin_login_ok: false,
+        admin_reason: cls.reason,
+        last_error: cls.reason,
+      });
+      else setDiag({ tcp_ok: true, server_reachable: true, admin_login_ok: false, admin_reason: cls.reason, last_error: cls.reason });
+      throw e;
+    }
   }
   masterPool = new ConnectionPool(adminConfig());
-  await masterPool.connect();
-  return masterPool;
+  try {
+    await masterPool.connect();
+    setDiag({
+      tcp_ok: true,
+      server_reachable: true,
+      sql_authentication_enabled: true,
+      admin_login_ok: true,
+      admin_reason: null,
+    });
+    return masterPool;
+  } catch (e) {
+    const cls = classifyMssqlError(e);
+    if (cls.isTcp) setDiag({ tcp_ok: false, server_reachable: false, admin_login_ok: false, admin_reason: cls.reason, last_error: cls.reason });
+    else if (cls.isLogin) setDiag({
+      tcp_ok: true,
+      server_reachable: true,
+      sql_authentication_enabled: ((e as any)?.number ?? 0) !== 233,
+      admin_login_ok: false,
+      admin_reason: cls.reason,
+      last_error: cls.reason,
+    });
+    else setDiag({ tcp_ok: true, server_reachable: true, admin_login_ok: false, admin_reason: cls.reason, last_error: cls.reason });
+    throw e;
+  }
 }
 
 async function databaseExists(pool: ConnectionPool, dbName: string): Promise<boolean> {
@@ -314,18 +500,25 @@ async function ensureDatabaseAndUser(): Promise<void> {
   const loginName = MSSQL_CONFIG.appUser;
   const loginPwd = MSSQL_CONFIG.appPassword;
 
+  const dbExistedBefore = await databaseExists(pool, dbName);
+  const loginExistedBefore = await loginExists(pool, loginName);
+  setDiag({
+    database_exists: dbExistedBefore,
+    app_login_exists: loginExistedBefore,
+  });
+
   const tx = pool.transaction();
   try {
     await tx.begin();
     const req = tx.request();
 
-    if (!(await databaseExists(pool, dbName))) {
+    if (!dbExistedBefore) {
       await req.query(`CREATE DATABASE [${dbName}] 
         ON PRIMARY (NAME = N'${dbName}_dat', FILENAME = N'${dbName}_dat.mdf', SIZE = 8MB, FILEGROWTH = 64MB)
         LOG ON (NAME = N'${dbName}_log', FILENAME = N'${dbName}_log.ldf', SIZE = 8MB, FILEGROWTH = 64MB);`);
     }
 
-    if (!(await loginExists(pool, loginName))) {
+    if (!loginExistedBefore) {
       await pool
         .request()
         .input("pwd", sql.NVarChar(512), loginPwd)
@@ -345,8 +538,13 @@ async function ensureDatabaseAndUser(): Promise<void> {
       );
 
     await tx.commit();
+    setDiag({
+      database_exists: true,
+      app_login_exists: true,
+    });
   } catch (e) {
     try { await tx.rollback(); } catch { /* noop */ }
+    setDiag({ last_error: classifyMssqlError(e).reason });
     throw e;
   }
 }
@@ -374,11 +572,50 @@ export async function ensureInitialized(): Promise<ConnectionPool> {
     try {
       if (!appPool || appPool.connected === false) {
         appPool = new ConnectionPool(appConfig());
-        await appPool.connect();
+        try {
+          await appPool.connect();
+          setDiag({
+            app_user_ok: true,
+            app_reason: null,
+            server_reachable: true,
+            tcp_ok: true,
+          });
+        } catch (e) {
+          const cls = classifyMssqlError(e);
+          const patch: Partial<MssqlConnectionDiagnostics> = {
+            app_user_ok: false,
+            app_reason: cls.reason,
+            last_error: cls.reason,
+          };
+          if (cls.isTcp) { patch.tcp_ok = false; patch.server_reachable = false; }
+          if (cls.isLogin) {
+            patch.sql_authentication_enabled = ((e as any)?.number ?? 0) !== 233;
+            if (patch.tcp_ok !== false) { patch.tcp_ok = true; patch.server_reachable = true; }
+          }
+          setDiag(patch);
+          throw e;
+        }
       }
-      await ensureSchema(appPool);
+      try {
+        await ensureSchema(appPool);
+        setDiag({
+          schema_ok: true,
+          ok: true,
+          initialized_at: new Date().toISOString(),
+          last_error: null,
+        });
+      } catch (e) {
+        const cls = classifyMssqlError(e);
+        setDiag({
+          schema_ok: false,
+          last_error: cls.reason,
+          ok: false,
+        });
+        throw e;
+      }
       return appPool;
     } catch (e) {
+      setDiag({ ok: false });
       console.error("[mssql] Failed to connect as app user:", (e as Error).message);
       throw e;
     }

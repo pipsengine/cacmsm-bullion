@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureInitialized } from "../../../../../../lib/mssql";
+import { withDb, jsonErr, jsonOk } from "../../../../../../lib/mt5-route-helpers";
 import {
   applySyncSnapshot,
   finishSyncRun,
@@ -10,45 +10,34 @@ import {
   startSyncRun,
   type SyncTrigger
 } from "../../../../../../lib/mt5-account-sync";
+import { ensureInitialized } from "../../../../../../lib/mssql";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function sleep(ms: number) {
   return new Promise<void>((res) => setTimeout(res, ms));
 }
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  try {
-    await ensureInitialized();
+  return withDb(async () => {
     const [runs, logs] = await Promise.all([
       listSyncRuns({ accountId: params.id, limit: 30 }),
       listSyncLogs({ accountId: params.id, limit: 150 })
     ]);
-    return NextResponse.json(
-      { ok: true, runs, logs },
-      { status: 200, headers: { "cache-control": "no-store" } }
-    );
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, message: e?.message ?? String(e), error: String(e) },
-      { status: 500 }
-    );
-  }
+    return jsonOk({ ok: true, runs, logs });
+  });
 }
 
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await ensureInitialized(); } catch (e) { return jsonErr(e); }
   try {
-    await ensureInitialized();
     const accountId = params.id;
     const acc = await getAccount(accountId, { includeSecrets: true });
-    if (!acc) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404 });
+    if (!acc) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404, headers: { "cache-control": "no-store" } });
 
     let body: { trigger?: SyncTrigger; simulate?: boolean; snapshot?: any } = {};
-    try {
-      body = await req.json().catch(() => ({}));
-    } catch {
-      body = {};
-    }
+    try { body = await req.json(); } catch { body = {}; }
 
     const trigger: SyncTrigger = body.trigger ?? "MANUAL";
     const started = Date.now();
@@ -152,7 +141,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         gateway_info: `${acc.broker_name} • ${acc.account_server} • simulated bridge v1.0.4`
       });
 
-      return NextResponse.json({ ok: true, run: finished, message: "Sync complete." }, { status: 200 });
+      return jsonOk({ ok: true, run: finished, message: "Sync complete." });
     } catch (syncErr: any) {
       await finishSyncRun(run.id, {
         status: "FAILED",
@@ -162,10 +151,5 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       });
       throw syncErr;
     }
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, message: e?.message ?? String(e), error: String(e) },
-      { status: 500 }
-    );
-  }
+  } catch (e) { return jsonErr(e); }
 }

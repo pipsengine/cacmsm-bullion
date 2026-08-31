@@ -604,6 +604,35 @@ const DEFAULT_ACCOUNTS: Omit<Mt5Account, "id" | "created_at" | "updated_at">[] =
   }
 ];
 
+type MssqlDiagnostics = {
+  ok: boolean;
+  server_reachable?: boolean;
+  tcp_ok?: boolean;
+  sql_authentication_enabled?: boolean;
+  admin_login_ok?: boolean;
+  admin_reason?: string;
+  database_exists?: boolean;
+  app_login_exists?: boolean;
+  app_user_ok?: boolean;
+  schema_ok?: boolean;
+  app_reason?: string;
+  last_error?: string;
+  config: {
+    server: string;
+    port: number;
+    database: string;
+    admin_user: string;
+    admin_password_set: boolean;
+    app_user: string;
+    app_password_set: boolean;
+    encrypt: boolean;
+    trust_cert: boolean;
+  };
+  recovery_steps?: string[];
+};
+
+type ApiErrorWithDiagnostics = Error & { diagnostics?: MssqlDiagnostics | null; status?: number };
+
 async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     cache: "no-store",
@@ -615,7 +644,12 @@ async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (!res.ok) {
     const msg = typeof data === "object" && data?.message ? data.message : `HTTP ${res.status}`;
-    throw new Error(msg);
+    const diagnostics: MssqlDiagnostics | null =
+      typeof data === "object" && data?.diagnostics ? (data.diagnostics as MssqlDiagnostics) : null;
+    const err = new Error(msg) as ApiErrorWithDiagnostics;
+    err.diagnostics = diagnostics;
+    err.status = res.status;
+    throw err;
   }
   return data as T;
 }
@@ -685,6 +719,7 @@ export default function Mt5AccountSyncPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorDiagnostics, setErrorDiagnostics] = useState<MssqlDiagnostics | null>(null);
   const [toast, setToast] = useState<{ type: "ok" | "err"; message: string } | null>(null);
   const [tab, setTab] = useState<"details" | "runs" | "logs">("details");
   const [filters, setFilters] = useState<{ modes: AccountMode[]; statuses: AccountStatus[] }>({ modes: [], statuses: [] });
@@ -697,45 +732,63 @@ export default function Mt5AccountSyncPage() {
   };
 
   const loadDashboard = useCallback(async () => {
-    try {
-      const [c, h, sumResp, accResp, runsResp, logsResp] = await Promise.all([
-        fetch("/api/control/status", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).catch(() => null),
-        fetch("/api/monitoring/summary", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).catch(() => null),
-        api<{ ok: boolean; summary: SyncSummary }>("/api/mt5-account-sync/summary"),
-        api<{ ok: boolean; accounts: Mt5Account[] }>("/api/mt5-account-sync/accounts"),
-        api<{ ok: boolean; runs: SyncRun[] }>("/api/mt5-account-sync/sync-runs?limit=60"),
-        api<{ ok: boolean; logs: SyncLogLine[] }>("/api/mt5-account-sync/sync-logs?limit=200")
-      ]);
-      if (c) setControl(c);
-      if (h) setHealth(h);
-      if (sumResp?.ok) setSummary(sumResp.summary);
-      if (accResp?.ok) {
-        const list = accResp.accounts;
-        setAccounts(list);
-        if (!selectedId && list.length) {
-          setSelectedId(list[0].id);
+    type Resp<T> = { ok: true; value: T } | { ok: false; err: ApiErrorWithDiagnostics };
+    const safeApi = async <T,>(path: string, init?: RequestInit): Promise<Resp<T>> => {
+      try { return { ok: true, value: await api<T>(path, init) }; }
+      catch (e: any) { return { ok: false, err: e }; }
+    };
+    const [c, h, sumR, accR, runsR, logsR] = await Promise.all([
+      fetch("/api/control/status", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/api/monitoring/summary", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      safeApi<{ ok: boolean; summary: SyncSummary }>("/api/mt5-account-sync/summary"),
+      safeApi<{ ok: boolean; accounts: Mt5Account[] }>("/api/mt5-account-sync/accounts"),
+      safeApi<{ ok: boolean; runs: SyncRun[] }>("/api/mt5-account-sync/sync-runs?limit=60"),
+      safeApi<{ ok: boolean; logs: SyncLogLine[] }>("/api/mt5-account-sync/sync-logs?limit=200"),
+    ]);
+    if (c) setControl(c);
+    if (h) setHealth(h);
+
+    let firstDiag: MssqlDiagnostics | null = null;
+    let firstMsg: string | null = null;
+    const settled: { ok: boolean; err?: ApiErrorWithDiagnostics }[] = [sumR, accR, runsR, logsR];
+    for (const r of settled) {
+      if (!r.ok) {
+        if (!firstMsg) firstMsg = r.err?.message ?? null;
+        if (!firstDiag && r.err?.diagnostics) firstDiag = r.err.diagnostics;
+      }
+    }
+
+    const sumResp = sumR.ok ? sumR.value : null;
+    const accResp = accR.ok ? accR.value : null;
+    const runsResp = runsR.ok ? runsR.value : null;
+    const logsResp = logsR.ok ? logsR.value : null;
+
+    if (sumResp?.ok) setSummary(sumResp.summary);
+    if (accResp?.ok) {
+      const list = accResp.accounts;
+      setAccounts(list);
+      if (!selectedId && list.length) setSelectedId(list[0].id);
+      if (!list.length && DEFAULT_ACCOUNTS.length) {
+        for (const seed of DEFAULT_ACCOUNTS) {
+          const seedR = await safeApi<any>("/api/mt5-account-sync/accounts", { method: "POST", body: JSON.stringify(seed) });
+          if (!seedR.ok) break;
         }
-        if (!list.length && DEFAULT_ACCOUNTS.length) {
-          try {
-            for (const seed of DEFAULT_ACCOUNTS) {
-              await api<any>("/api/mt5-account-sync/accounts", {
-                method: "POST",
-                body: JSON.stringify(seed)
-              });
-            }
-            const fresh = await api<{ ok: boolean; accounts: Mt5Account[] }>("/api/mt5-account-sync/accounts");
-            if (fresh?.ok) {
-              setAccounts(fresh.accounts);
-              if (fresh.accounts.length) setSelectedId(fresh.accounts[0].id);
-            }
-          } catch { /* noop */ }
+        const freshR = await safeApi<{ ok: boolean; accounts: Mt5Account[] }>("/api/mt5-account-sync/accounts");
+        if (freshR.ok && freshR.value?.ok) {
+          setAccounts(freshR.value.accounts);
+          if (freshR.value.accounts.length) setSelectedId(freshR.value.accounts[0].id);
         }
       }
-      if (runsResp?.ok) setRuns(runsResp.runs);
-      if (logsResp?.ok) setLogs(logsResp.logs);
+    }
+    if (runsResp?.ok) setRuns(runsResp.runs);
+    if (logsResp?.ok) setLogs(logsResp.logs);
+
+    if (!firstMsg) {
       setError(null);
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
+      setErrorDiagnostics(null);
+    } else {
+      setError(firstMsg);
+      setErrorDiagnostics(firstDiag);
     }
   }, [selectedId]);
 
@@ -1012,9 +1065,93 @@ export default function Mt5AccountSyncPage() {
       ) : null}
 
       {error ? (
-        <div className="masBanner masBannerErr" style={{ marginBottom: 14 }}>
-          <span>{error}</span>
-          <button className="masBtn masBtnSmall" onClick={() => { setError(null); void loadDashboard(); }}>RETRY</button>
+        <div className="masBanner masBannerErr" style={{ marginBottom: 14, padding: "10px 14px", display: "block" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: errorDiagnostics ? 10 : 0 }}>
+            <span style={{ fontWeight: 600, lineHeight: 1.4 }}>{error}</span>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <button
+                className="masBtn masBtnSmall"
+                style={{ fontSize: 11, padding: "4px 10px" }}
+                onClick={() => {
+                  const diag = errorDiagnostics;
+                  if (diag) {
+                    console.group("MT5 Account Sync · MSSQL diagnostics");
+                    console.log(JSON.stringify(diag, null, 2));
+                    console.groupEnd();
+                  }
+                  void loadDashboard();
+                }}
+                title="Dump structured diagnostics to DevTools console and retry"
+              >DIAG + RETRY</button>
+              <button className="masBtn masBtnSmall" onClick={() => { setError(null); setErrorDiagnostics(null); }}>DISMISS</button>
+            </div>
+          </div>
+          {errorDiagnostics ? (
+            <div style={{
+              marginTop: 4,
+              padding: "10px 12px",
+              background: "rgba(18, 27, 51, 0.65)",
+              border: "1px solid rgba(170, 90, 90, 0.35)",
+              borderRadius: 10,
+              fontSize: 12.5,
+              color: "#d8ddea",
+              lineHeight: 1.55
+            }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gap: "6px 16px",
+                marginBottom: 10
+              }}>
+                {[
+                  ["SQL Server reachable", errorDiagnostics.tcp_ok === null ? "—" : errorDiagnostics.tcp_ok ? "✅ Yes" : "❌ No"],
+                  ["SQL Auth mode", errorDiagnostics.sql_authentication_enabled === null ? "—" : errorDiagnostics.sql_authentication_enabled ? "✅ Mixed/SQL" : "❌ Windows-only (number=233)"],
+                  ["Admin login OK", errorDiagnostics.admin_login_ok === null ? "—" : errorDiagnostics.admin_login_ok ? "✅ OK" : errorDiagnostics.config.admin_password_set === false ? "⚠ No password set" : "❌ Failed"],
+                  ["DB exists", errorDiagnostics.database_exists === null ? "—" : errorDiagnostics.database_exists ? "✅ Yes" : "❌ Not yet created"],
+                  ["App login exists", errorDiagnostics.app_login_exists === null ? "—" : errorDiagnostics.app_login_exists ? "✅ Yes" : "❌ Not yet created"],
+                  [`App user (${errorDiagnostics.config.app_user}) connect`, errorDiagnostics.app_user_ok === null ? "—" : errorDiagnostics.app_user_ok ? "✅ OK" : "❌ Failed"],
+                  ["Schema applied", errorDiagnostics.schema_ok === null ? "—" : errorDiagnostics.schema_ok ? "✅ Yes" : "❌ No"],
+                ].map(([k, v]) => (
+                  <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#91a5c9" }}>{k}</span>
+                    <strong style={{ fontWeight: 600, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace" }}>{v}</strong>
+                  </div>
+                ))}
+              </div>
+              {errorDiagnostics.last_error ? (
+                <div style={{ marginBottom: 10, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12, color: "#d4b4b4", wordBreak: "break-word" }}>
+                  <span style={{ color: "#91a5c9" }}>Last driver error: </span>
+                  {errorDiagnostics.last_error}
+                </div>
+              ) : null}
+              {errorDiagnostics.recovery_steps && errorDiagnostics.recovery_steps.length ? (
+                <div>
+                  <div style={{ fontWeight: 700, color: "#f4e3b3", marginBottom: 6 }}>🛠  Recovery steps (follow in order):</div>
+                  <ol style={{ paddingLeft: 22, margin: 0 }}>
+                    {errorDiagnostics.recovery_steps.map((step, i) => (
+                      <li key={i} style={{ marginBottom: 3, whiteSpace: "pre-wrap" }}>
+                        {step.includes("\n") ? (
+                          <>
+                            <div>{step.split("\n")[0]}</div>
+                            <pre style={{
+                              margin: "4px 0 6px 0",
+                              padding: "8px 10px",
+                              background: "#0b1226",
+                              border: "1px solid rgba(100, 130, 200, 0.25)",
+                              borderRadius: 6,
+                              overflowX: "auto",
+                              color: "#bcd2ff",
+                              fontSize: 11.5
+                            }}>{step.split("\n").slice(1).join("\n")}</pre>
+                          </>
+                        ) : step}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

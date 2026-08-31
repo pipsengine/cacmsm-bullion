@@ -1,62 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensureInitialized } from "../../../../../lib/mssql";
+import { withDb, jsonErr, jsonOk } from "../../../../../lib/mt5-route-helpers";
 import {
   deleteAccount,
   getAccount,
   updateAccount,
   type AccountUpdateInput
 } from "../../../../../lib/mt5-account-sync";
+import { ensureInitialized, getConnectionDiagnostics } from "../../../../../lib/mssql";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  try {
-    await ensureInitialized();
+  return withDb(async () => {
     const acc = await getAccount(params.id, { includeSecrets: true });
-    if (!acc) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404 });
-    return NextResponse.json({ ok: true, account: acc }, { status: 200, headers: { "cache-control": "no-store" } });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, message: e?.message ?? String(e), error: String(e) },
-      { status: 500 }
-    );
-  }
+    if (!acc) return NextResponse.json({ ok: false, message: "Account not found.", diagnostics: getConnectionDiagnostics() }, { status: 404, headers: { "cache-control": "no-store" } });
+    return jsonOk({ ok: true, account: acc });
+  });
 }
 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+  try { await ensureInitialized(); } catch (e) { return jsonErr(e); }
+  let body: AccountUpdateInput;
+  try { body = await req.json(); }
+  catch { return NextResponse.json({ ok: false, message: "Invalid JSON payload.", diagnostics: getConnectionDiagnostics() }, { status: 400, headers: { "cache-control": "no-store" } }); }
   try {
-    await ensureInitialized();
-    let body: AccountUpdateInput;
-    try {
-      body = await req.json();
-    } catch {
-      return NextResponse.json({ ok: false, message: "Invalid JSON payload." }, { status: 400 });
-    }
     const updated = await updateAccount(params.id, body);
-    if (!updated) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404 });
-    return NextResponse.json({ ok: true, account: updated }, { status: 200 });
+    if (!updated) return NextResponse.json({ ok: false, message: "Account not found.", diagnostics: getConnectionDiagnostics() }, { status: 404, headers: { "cache-control": "no-store" } });
+    return jsonOk({ ok: true, account: updated });
   } catch (e: any) {
     const msg = e?.message ?? String(e);
     if (msg.toLowerCase().includes("unique") || msg.toLowerCase().includes("duplicate") || msg.includes("UNIQUE")) {
-      return NextResponse.json({ ok: false, message: "Duplicate login/server combination." }, { status: 409 });
+      return jsonErr(e, { status: 409, extra: { message: "Duplicate login/server combination." } });
     }
-    return NextResponse.json(
-      { ok: false, message: msg, error: String(e) },
-      { status: 500 }
-    );
+    return jsonErr(e);
   }
 }
 
 export async function DELETE(_req: NextRequest, { params }: { params: { id: string } }) {
+  try { await ensureInitialized(); } catch (e) { return jsonErr(e); }
   try {
-    await ensureInitialized();
     const deleted = await deleteAccount(params.id);
-    if (!deleted) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404 });
-    return NextResponse.json({ ok: true, message: "Account deleted." }, { status: 200 });
-  } catch (e: any) {
-    return NextResponse.json(
-      { ok: false, message: e?.message ?? String(e), error: String(e) },
-      { status: 500 }
-    );
-  }
+    if (!deleted) return NextResponse.json({ ok: false, message: "Account not found.", diagnostics: getConnectionDiagnostics() }, { status: 404, headers: { "cache-control": "no-store" } });
+    return jsonOk({ ok: true, message: "Account deleted." });
+  } catch (e) { return jsonErr(e); }
 }
