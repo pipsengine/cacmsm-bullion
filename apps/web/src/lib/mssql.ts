@@ -486,43 +486,43 @@ const SCHEMA_INDEX_STATEMENTS: { name: string; table: Mt5TableName; sql: string 
   {
     name: "IX_sync_runs_account_id_started_at",
     table: "sync_runs",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_runs_account_id_started_at' AND object_id = OBJECT_ID(N'mt5.sync_runs'))
+    sql: `IF OBJECT_ID(N'mt5.sync_runs', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_runs_account_id_started_at' AND object_id = OBJECT_ID(N'mt5.sync_runs'))
  CREATE INDEX [IX_sync_runs_account_id_started_at] ON [mt5].[sync_runs] ([account_id] DESC, [started_at] DESC);`,
   },
   {
     name: "IX_sync_logs_account_id_logged_at",
     table: "sync_logs",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_account_id_logged_at' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
+    sql: `IF OBJECT_ID(N'mt5.sync_logs', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_account_id_logged_at' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
  CREATE INDEX [IX_sync_logs_account_id_logged_at] ON [mt5].[sync_logs] ([account_id] DESC, [logged_at] DESC);`,
   },
   {
     name: "IX_sync_logs_sync_run_id",
     table: "sync_logs",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_sync_run_id' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
+    sql: `IF OBJECT_ID(N'mt5.sync_logs', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_sync_logs_sync_run_id' AND object_id = OBJECT_ID(N'mt5.sync_logs'))
  CREATE INDEX [IX_sync_logs_sync_run_id] ON [mt5].[sync_logs] ([sync_run_id] DESC, [logged_at] DESC);`,
   },
   {
     name: "IX_account_snapshots_account_id_captured_at",
     table: "account_snapshots",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_account_snapshots_account_id_captured_at' AND object_id = OBJECT_ID(N'mt5.account_snapshots'))
+    sql: `IF OBJECT_ID(N'mt5.account_snapshots', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_account_snapshots_account_id_captured_at' AND object_id = OBJECT_ID(N'mt5.account_snapshots'))
  CREATE INDEX [IX_account_snapshots_account_id_captured_at] ON [mt5].[account_snapshots] ([account_id] DESC, [captured_at] DESC);`,
   },
   {
     name: "IX_positions_account_id_open_ts",
     table: "positions",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_positions_account_id_open_ts' AND object_id = OBJECT_ID(N'mt5.positions'))
+    sql: `IF OBJECT_ID(N'mt5.positions', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_positions_account_id_open_ts' AND object_id = OBJECT_ID(N'mt5.positions'))
  CREATE INDEX [IX_positions_account_id_open_ts] ON [mt5].[positions] ([account_id] DESC, [open_ts] DESC) WHERE [is_open] = 1;`,
   },
   {
     name: "IX_deals_account_id_deal_ts",
     table: "deals",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_deals_account_id_deal_ts' AND object_id = OBJECT_ID(N'mt5.deals'))
+    sql: `IF OBJECT_ID(N'mt5.deals', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_deals_account_id_deal_ts' AND object_id = OBJECT_ID(N'mt5.deals'))
  CREATE INDEX [IX_deals_account_id_deal_ts] ON [mt5].[deals] ([account_id] DESC, [deal_ts] DESC);`,
   },
   {
     name: "IX_pending_orders_account_id_created_ts",
     table: "pending_orders",
-    sql: `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_pending_orders_account_id_created_ts' AND object_id = OBJECT_ID(N'mt5.pending_orders'))
+    sql: `IF OBJECT_ID(N'mt5.pending_orders', N'U') IS NOT NULL AND NOT EXISTS (SELECT * FROM sys.indexes WHERE name = N'IX_pending_orders_account_id_created_ts' AND object_id = OBJECT_ID(N'mt5.pending_orders'))
  CREATE INDEX [IX_pending_orders_account_id_created_ts] ON [mt5].[pending_orders] ([account_id] DESC, [created_ts] DESC) WHERE [status] = 'OPEN';`,
   },
 ];

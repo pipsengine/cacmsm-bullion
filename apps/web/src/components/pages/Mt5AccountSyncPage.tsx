@@ -1116,6 +1116,29 @@ export default function Mt5AccountSyncPage() {
           </p>
         </div>
         <div className="masToolbar">
+          {errorInfo.hasError ? (
+            <button
+              className={`${errorInfo.newBadge > 0 ? "masChipWarn" : "masChip"}`}
+              style={{ padding: "9px 14px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 10 }}
+              onClick={() => setBannerOpen((o) => !o)}
+              title="Toggle MSSQL / connection diagnostics panel"
+            >
+              <span className="masDot" />
+              <div style={{ display: "grid", lineHeight: 1.1, textAlign: "left" }}>
+                <span style={{ fontWeight: 900, letterSpacing: "0.05em" }}>
+                  ⚙ Diagnostics
+                  {errorInfo.newBadge > 0 ? (
+                    <span style={{ marginLeft: 8, padding: "1px 8px", borderRadius: 999, background: "#a22", color: "#fff", fontSize: 11, fontWeight: 800, letterSpacing: "0.03em" }}>
+                      1 new
+                    </span>
+                  ) : null}
+                </span>
+                <span style={{ color: "#91a5c9", fontSize: "0.72rem", fontWeight: 600 }}>
+                  {errorDiagnostics?.schema_ok === false ? "Schema repair pending" : bannerOpen ? "Close details" : "Open MSSQL / status details"}
+                </span>
+              </div>
+            </button>
+          ) : null}
           {systemChips.map((c, i) => (
             <div key={i} className={c.cls}>
               <span className={c.dot} />
@@ -1135,7 +1158,7 @@ export default function Mt5AccountSyncPage() {
         </div>
       ) : null}
 
-      {error ? (
+      {error && bannerOpen ? (
         <div className="masBanner masBannerErr" style={{ marginBottom: 14, padding: "10px 14px", display: "block" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: errorDiagnostics ? 10 : 0 }}>
             <span style={{ fontWeight: 600, lineHeight: 1.4 }}>{error}</span>
@@ -1154,7 +1177,8 @@ export default function Mt5AccountSyncPage() {
                 }}
                 title="Dump structured diagnostics to DevTools console and retry"
               >DIAG + RETRY</button>
-              <button className="masBtn masBtnSmall" onClick={() => { setError(null); setErrorDiagnostics(null); }}>DISMISS</button>
+              <button className="masBtn masBtnSmall" onClick={() => { setBannerOpen(false); dismissCurrent(); }}>DISMISS &amp; HIDE</button>
+              <button className="masBtn masBtnSmall" onClick={() => setBannerOpen(false)}>CLOSE</button>
             </div>
           </div>
           {errorDiagnostics ? (
