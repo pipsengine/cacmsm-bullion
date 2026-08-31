@@ -9,20 +9,41 @@ import History24hPage from "../../../components/pages/History24hPage";
 import Mt5TerminalPage from "../../../components/pages/Mt5TerminalPage";
 import Mt5AccountSyncPage from "../../../components/pages/Mt5AccountSyncPage";
 
-type ControlStatus = { running: boolean; mode: string; kill: boolean };
+type ControlStatusModeShape =
+  | string
+  | { active: string; envelope?: string };
+
+type ControlStatus = {
+  running?: boolean;
+  kill?: boolean;
+  mode?: ControlStatusModeShape;
+  status?: string | null;
+  routing?: string | { primary_symbol?: string; routing_mode?: string };
+};
 type HealthSummary = {
-  running: boolean;
-  mode: string;
-  kill: boolean;
+  running?: boolean;
+  mode?: string | ControlStatusModeShape;
+  kill?: boolean;
   last_tick_age_ms: number | null;
   last_decision_age_ms: number | null;
   notes: string[];
 };
 
 async function apiGet(path: string) {
-  const res = await fetch(path, { cache: "no-store" });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
+  try {
+    const res = await fetch(path, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+function toActiveMode(mode: ControlStatusModeShape | undefined | null): string {
+  if (!mode) return "DEMO";
+  if (typeof mode === "string") return mode.toUpperCase();
+  if (typeof mode.active === "string") return mode.active.toUpperCase();
+  return "DEMO";
 }
 
 function Title({ group, title }: { group: string; title: string }) {
@@ -132,7 +153,7 @@ export default function AnyPage() {
 
   const kpi = [
     { label: "System", value: control?.kill ? "HALTED" : control?.running ? "RUNNING" : "STOPPED", hint: "From Control API" },
-    { label: "Mode", value: (control?.mode ?? "demo").toUpperCase(), hint: "demo / prop / live policy envelope" },
+    { label: "Mode", value: toActiveMode(control?.mode ?? "DEMO"), hint: "demo / prop / live policy envelope" },
     { label: "Feed age", value: health?.last_tick_age_ms == null ? "-" : `${health.last_tick_age_ms}ms`, hint: "Market freshness" },
     { label: "Decision age", value: health?.last_decision_age_ms == null ? "-" : `${health.last_decision_age_ms}ms`, hint: "Decision freshness" }
   ];
