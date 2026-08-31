@@ -7,6 +7,7 @@ import { Card, JsonBlock, Kpi } from "../../../components/ui/Cards";
 import MarketMatrixPage from "../../../components/pages/MarketMatrixPage";
 import History24hPage from "../../../components/pages/History24hPage";
 import Mt5TerminalPage from "../../../components/pages/Mt5TerminalPage";
+import Mt5AccountSyncPage from "../../../components/pages/Mt5AccountSyncPage";
 
 type ControlStatus = { running: boolean; mode: string; kill: boolean };
 type HealthSummary = {
@@ -52,6 +53,9 @@ export default function AnyPage() {
   }
   if (pathname === "/execution/mt5-terminal") {
     return <Mt5TerminalPage />;
+  }
+  if (pathname === "/execution/mt5-account-sync") {
+    return <Mt5AccountSyncPage />;
   }
 
   const info = useMemo(() => findNavItem(pathname), [pathname]);
