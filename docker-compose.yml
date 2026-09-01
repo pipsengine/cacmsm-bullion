@@ -14,7 +14,7 @@ services:
       - "127.0.0.1:5432:5432"
     environment:
       - POSTGRES_USER=cacsms
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-cacsms_dev_password}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       - POSTGRES_DB=cacsms_bullion
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -32,7 +32,7 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379/0
       - CONFIG_FILE=/app/config/base.yaml
-      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:?Set ADMIN_API_TOKEN}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -65,7 +65,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CONFIG_FILE=/app/config/base.yaml
       - DB_ENABLED=1
-      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:-cacsms_dev_password}@postgres:5432/cacsms_bullion
+      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/cacsms_bullion
     ports:
       - "127.0.0.1:8002:8002"
     depends_on:
@@ -85,7 +85,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CONFIG_FILE=/app/config/base.yaml
       - DB_ENABLED=1
-      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:-cacsms_dev_password}@postgres:5432/cacsms_bullion
+      - DATABASE_URL=postgresql+psycopg2://cacsms:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/cacsms_bullion
     ports:
       - "127.0.0.1:8003:8003"
     depends_on:
@@ -117,7 +117,19 @@ services:
       - DECISION_API_URL=http://decision-service:8002
       - EXECUTION_API_URL=http://execution-service:8003
       - MONITORING_API_URL=http://monitoring-service:8004
-      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-}
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:?Set ADMIN_API_TOKEN}
+      - WEB_AUTH_USER=${WEB_AUTH_USER:?Set WEB_AUTH_USER}
+      - WEB_AUTH_PASSWORD=${WEB_AUTH_PASSWORD:?Set WEB_AUTH_PASSWORD}
+      - MSSQL_SERVER=${MSSQL_SERVER:-host.docker.internal}
+      - MSSQL_PORT=${MSSQL_PORT:-1433}
+      - MSSQL_ADMIN_USER=${MSSQL_ADMIN_USER:-sa}
+      - MSSQL_ADMIN_PASSWORD=${MSSQL_ADMIN_PASSWORD:?Set MSSQL_ADMIN_PASSWORD}
+      - MSSQL_DATABASE=${MSSQL_DATABASE:-db_Cacsms-bullion}
+      - MSSQL_APP_USER=${MSSQL_APP_USER:-cacsms}
+      - MSSQL_APP_PASSWORD=${MSSQL_APP_PASSWORD:?Set MSSQL_APP_PASSWORD}
+      - MSSQL_ENCRYPT=${MSSQL_ENCRYPT:-false}
+      - MSSQL_TRUST_CERT=${MSSQL_TRUST_CERT:-true}
+      - MT5_CREDENTIAL_KEY=${MT5_CREDENTIAL_KEY:?Set MT5_CREDENTIAL_KEY}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

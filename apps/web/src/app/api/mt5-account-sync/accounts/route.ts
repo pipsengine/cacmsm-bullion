@@ -15,10 +15,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   return withDb(async () => {
     const url = new URL(req.url);
-    const includeSecrets = url.searchParams.get("include_secrets") === "1";
     const modes = url.searchParams.get("modes")?.split(",").filter(Boolean) as AccountMode[] | undefined;
     const statuses = url.searchParams.get("statuses")?.split(",").filter(Boolean) as AccountStatus[] | undefined;
-    const accounts = await listAccounts({ includeSecrets, modeFilter: modes, statusFilter: statuses });
+    const accounts = await listAccounts({ includeSecrets: false, modeFilter: modes, statusFilter: statuses });
     return jsonOk({ ok: true, accounts });
   });
 }

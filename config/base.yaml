@@ -60,3 +60,5 @@ services:
     redis_url: redis://redis:6379/0
     key_last_tick_ts: telemetry:last_tick_ts
     key_last_decision_ts: telemetry:last_decision_ts
+    watchdog_interval_s: 1.0
+    feed_stale_halt_ms: 15000

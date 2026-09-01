@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,6 +27,8 @@ class Settings(BaseServiceSettings):
     kill_key: str = "control:kill"
     key_last_tick_ts: str = "telemetry:last_tick_ts"
     key_last_decision_ts: str = "telemetry:last_decision_ts"
+    watchdog_interval_s: float = 1.0
+    feed_stale_halt_ms: int = 15000
 
 
 def ms_since(ts_iso: Optional[str]) -> Optional[int]:
@@ -56,12 +59,41 @@ def create_app(*, redis_client: Redis | None = None) -> FastAPI:
     app = FastAPI(title="Cacsms-Bullion Monitoring Service", version="0.2.0")
     app.state.settings = settings
     app.state.redis = redis_client
+    app.state.watchdog_stop = threading.Event()
+    app.state.watchdog_thread = None
+
+    def enforce_feed_safety() -> bool:
+        r = app.state.redis
+        running = r.get(settings.control_key) == "1"
+        tick_age = ms_since(r.get(settings.key_last_tick_ts))
+        if running and tick_age is not None and tick_age > settings.feed_stale_halt_ms:
+            r.set(settings.kill_key, "1")
+            r.set(settings.control_key, "0")
+            log.error("kill switch triggered by stale market feed", extra={"fields": {"tick_age_ms": tick_age}})
+            return True
+        return False
+
+    def watchdog() -> None:
+        while not app.state.watchdog_stop.wait(settings.watchdog_interval_s):
+            try:
+                enforce_feed_safety()
+            except Exception:  # noqa: BLE001
+                log.exception("monitoring watchdog check failed")
 
     @app.on_event("startup")
     def _startup() -> None:
         if app.state.redis is None:
             app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
+        app.state.watchdog_stop.clear()
+        app.state.watchdog_thread = threading.Thread(target=watchdog, name="feed-safety-watchdog", daemon=True)
+        app.state.watchdog_thread.start()
         log.info("monitoring-service started")
+
+    @app.on_event("shutdown")
+    def _shutdown() -> None:
+        app.state.watchdog_stop.set()
+        if app.state.watchdog_thread:
+            app.state.watchdog_thread.join(timeout=max(1.0, settings.watchdog_interval_s * 2))
 
     @app.get("/healthz")
     def healthz():
@@ -98,9 +130,7 @@ def create_app(*, redis_client: Redis | None = None) -> FastAPI:
             notes.append("Decision engine appears stalled (>8s).")
 
         # MVP auto-halt rule: if tick feed is stale for too long while running, trigger kill switch.
-        if running and (tick_age is not None) and tick_age > 15000:
-            r.set(settings.kill_key, "1")
-            r.set(settings.control_key, "0")
+        if enforce_feed_safety():
             notes.append("Kill switch triggered: feed stale for >15s.")
             kill = True
             running = False

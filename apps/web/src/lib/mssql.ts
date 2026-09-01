@@ -7,7 +7,7 @@ export const MSSQL_CONFIG = {
   password: process.env.MSSQL_ADMIN_PASSWORD || "",
   database: process.env.MSSQL_DATABASE || "db_Cacsms-bullion",
   appUser: process.env.MSSQL_APP_USER || "cacsms",
-  appPassword: process.env.MSSQL_APP_PASSWORD || "P@882w0rd",
+  appPassword: process.env.MSSQL_APP_PASSWORD || "",
   options: {
     encrypt: process.env.MSSQL_ENCRYPT === "true",
     trustServerCertificate: process.env.MSSQL_TRUST_CERT !== "false",
@@ -84,6 +84,10 @@ let lastDiagnostics: MssqlConnectionDiagnostics = {
 
 function classifyMssqlError(err: any): { code: string | null; isTcp: boolean; isLogin: boolean; reason: string } {
   const message: string = (err?.message ?? String(err ?? "")).toString();
+  const preceding = Array.isArray(err?.precedingErrors)
+    ? err.precedingErrors.map((item: any) => String(item?.message ?? "")).filter(Boolean)
+    : [];
+  const reason = Array.from(new Set([message, ...preceding])).join(" | ");
   const rawCode: string | null =
     (err as any)?.code ??
     (err as any)?.cause?.code ??
@@ -113,11 +117,12 @@ function classifyMssqlError(err: any): { code: string | null; isTcp: boolean; is
     code: rawCode,
     isTcp,
     isLogin,
-    reason: message.slice(0, 400),
+    reason: reason.slice(0, 1200),
   };
 }
 
 function buildRecoverySteps(d: MssqlConnectionDiagnostics): string[] {
+  if (d.ok) return [];
   const steps: string[] = [];
   const envBlock =
     `MSSQL_SERVER=${MSSQL_CONFIG.server}\n` +
@@ -126,7 +131,7 @@ function buildRecoverySteps(d: MssqlConnectionDiagnostics): string[] {
     `MSSQL_ADMIN_PASSWORD=<your-sa-password>\n` +
     `MSSQL_DATABASE=${MSSQL_CONFIG.database}\n` +
     `MSSQL_APP_USER=${MSSQL_CONFIG.appUser}\n` +
-    `MSSQL_APP_PASSWORD=${MSSQL_CONFIG.appPassword}\n` +
+    `MSSQL_APP_PASSWORD=<your-app-password>\n` +
     `MSSQL_ENCRYPT=false\n` +
     `MSSQL_TRUST_CERT=true`;
 
@@ -361,8 +366,8 @@ const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
   sync_logs: `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'mt5' AND TABLE_NAME = 'sync_logs')
    CREATE TABLE [mt5].[sync_logs] (
      [id] BIGINT NOT NULL IDENTITY(1,1) PRIMARY KEY,
-     [sync_run_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[sync_runs](id) ON DELETE SET NULL,
-     [account_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[accounts](id) ON DELETE SET NULL,
+     [sync_run_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[sync_runs](id),
+     [account_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
      [logged_at] DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET(),
      [level] NVARCHAR(16) NOT NULL CHECK ([level] IN ('DEBUG','INFO','WARN','ERROR','SUCCESS')),
      [category] NVARCHAR(64) NOT NULL DEFAULT 'SYNC',
@@ -374,7 +379,7 @@ const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
    CREATE TABLE [mt5].[account_snapshots] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
-     [sync_run_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[sync_runs](id) ON DELETE SET NULL,
+     [sync_run_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[sync_runs](id),
      [captured_at] DATETIMEOFFSET NOT NULL DEFAULT SYSDATETIMEOFFSET(),
      [login] BIGINT NOT NULL,
      [server] NVARCHAR(256) NOT NULL,
@@ -403,7 +408,7 @@ const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
    CREATE TABLE [mt5].[positions] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
-     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id) ON DELETE SET NULL,
+     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id),
      [ticket] BIGINT NOT NULL,
      [identifier] BIGINT NULL,
      [open_ts] DATETIMEOFFSET NOT NULL,
@@ -434,7 +439,7 @@ const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
    CREATE TABLE [mt5].[pending_orders] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
-     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id) ON DELETE SET NULL,
+     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id),
      [ticket] BIGINT NOT NULL,
      [created_ts] DATETIMEOFFSET NOT NULL,
      [order_type] NVARCHAR(16) NOT NULL CHECK ([order_type] IN ('BUY LIMIT','SELL LIMIT','BUY STOP','SELL STOP','BUY STOP LIMIT','SELL STOP LIMIT')),
@@ -458,7 +463,7 @@ const SCHEMA_CREATE_TABLE_BY_NAME: Record<Mt5TableName, string> = {
    CREATE TABLE [mt5].[deals] (
      [id] UNIQUEIDENTIFIER NOT NULL PRIMARY KEY DEFAULT NEWSEQUENTIALID(),
      [account_id] UNIQUEIDENTIFIER NOT NULL REFERENCES [mt5].[accounts](id) ON DELETE CASCADE,
-     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id) ON DELETE SET NULL,
+     [snapshot_id] UNIQUEIDENTIFIER NULL REFERENCES [mt5].[account_snapshots](id),
      [deal_ticket] BIGINT NOT NULL,
      [order_ticket] BIGINT NULL,
      [deal_ts] DATETIMEOFFSET NOT NULL,
@@ -527,47 +532,14 @@ const SCHEMA_INDEX_STATEMENTS: { name: string; table: Mt5TableName; sql: string 
   },
 ];
 
-function sqlDropIfExists(tables: Mt5TableName[]): string {
-  // Drop in reverse dependency order so FK refs don't block us.
-  const reverse: Mt5TableName[] = [...tables].sort(
-    (a, b) => SCHEMA_TABLE_NAMES_IN_ORDER.indexOf(b) - SCHEMA_TABLE_NAMES_IN_ORDER.indexOf(a),
-  );
-  const parts: string[] = [];
-  for (const t of reverse) parts.push(`IF OBJECT_ID(N'mt5.${t}', N'U') IS NOT NULL DROP TABLE [mt5].[${t}];`);
-  return parts.join("\n");
-}
-
-async function rebuildTables(pool: ConnectionPool, tables: Mt5TableName[]): Promise<void> {
-  await pool.request().query(sqlDropIfExists(tables));
-  // Re-create in forward dependency order.
-  for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
-    if (tables.includes(t)) {
-      await pool.request().query(SCHEMA_CREATE_TABLE_BY_NAME[t]);
-    }
-  }
-  for (const ix of SCHEMA_INDEX_STATEMENTS) {
-    if (tables.includes(ix.table)) {
-      await pool.request().query(ix.sql);
-    }
-  }
-}
-
-function tablesReferencedInErrorMessage(err: any): Mt5TableName[] {
-  const msg: string = String((err as any)?.message ?? err ?? "").toLowerCase();
-  const hits: Mt5TableName[] = [];
-  for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
-    if (msg.includes(`[mt5].[${t}]`) || msg.includes(`mt5.${t}`) || msg.includes(`'${t}'`)) {
-      if (!hits.includes(t)) hits.push(t);
-    }
-  }
-  return hits;
-}
-
 async function ensureDatabaseAndUser(): Promise<void> {
   const pool = await getMasterPool();
   const dbName = MSSQL_CONFIG.database;
   const loginName = MSSQL_CONFIG.appUser;
   const loginPwd = MSSQL_CONFIG.appPassword;
+  if (!/^[A-Za-z0-9_-]+$/.test(dbName) || !/^[A-Za-z0-9_.-]+$/.test(loginName)) {
+    throw new Error("MSSQL_DATABASE or MSSQL_APP_USER contains unsupported identifier characters");
+  }
 
   const dbExistedBefore = await databaseExists(pool, dbName);
   const loginExistedBefore = await loginExists(pool, loginName);
@@ -576,13 +548,10 @@ async function ensureDatabaseAndUser(): Promise<void> {
     app_login_exists: loginExistedBefore,
   });
 
-  const tx = pool.transaction();
   try {
-    await tx.begin();
-    const req = tx.request();
-
     if (!dbExistedBefore) {
-      await req.query(`CREATE DATABASE [${dbName}] 
+      // CREATE DATABASE cannot run inside an explicit user transaction.
+      await pool.request().query(`CREATE DATABASE [${dbName}]
         ON PRIMARY (NAME = N'${dbName}_dat', FILENAME = N'${dbName}_dat.mdf', SIZE = 8MB, FILEGROWTH = 64MB)
         LOG ON (NAME = N'${dbName}_log', FILENAME = N'${dbName}_log.ldf', SIZE = 8MB, FILEGROWTH = 64MB);`);
     }
@@ -591,7 +560,7 @@ async function ensureDatabaseAndUser(): Promise<void> {
       await pool
         .request()
         .input("pwd", sql.NVarChar(512), loginPwd)
-        .query(`CREATE LOGIN [${loginName}] WITH PASSWORD = @pwd, CHECK_POLICY = OFF, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = [${dbName}];`);
+        .query(`CREATE LOGIN [${loginName}] WITH PASSWORD = @pwd, CHECK_POLICY = ON, CHECK_EXPIRATION = OFF, DEFAULT_DATABASE = [${dbName}];`);
     }
 
     await pool
@@ -603,16 +572,19 @@ async function ensureDatabaseAndUser(): Promise<void> {
          BEGIN
            CREATE USER [${loginName}] FOR LOGIN [${loginName}] WITH DEFAULT_SCHEMA = [dbo];
          END
-         ALTER ROLE [db_owner] ADD MEMBER [${loginName}];`
+         IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'mt5')
+           EXEC('CREATE SCHEMA [mt5] AUTHORIZATION [dbo]');
+         ALTER ROLE [db_datareader] ADD MEMBER [${loginName}];
+         ALTER ROLE [db_datawriter] ADD MEMBER [${loginName}];
+         GRANT CREATE TABLE TO [${loginName}];
+         GRANT ALTER ON SCHEMA::[mt5] TO [${loginName}];`
       );
 
-    await tx.commit();
     setDiag({
       database_exists: true,
       app_login_exists: true,
     });
   } catch (e) {
-    try { await tx.rollback(); } catch { /* noop */ }
     setDiag({ last_error: classifyMssqlError(e).reason });
     throw e;
   }
@@ -626,44 +598,27 @@ async function ensureSchema(pool: ConnectionPool): Promise<void> {
   for (const t of SCHEMA_TABLE_NAMES_IN_ORDER) {
     try {
       await pool.request().query(SCHEMA_CREATE_TABLE_BY_NAME[t]);
-    } catch (e) {
-      const refs = tablesReferencedInErrorMessage(e);
-      if (!refs.length) throw e;
-      console.warn(`[mssql] ensureSchema: table "${t}" failed; repairing: ${refs.join(", ")}`);
-      await rebuildTables(pool, refs);
+    } catch (error) {
+      throw new Error(`Schema table '${t}' failed: ${classifyMssqlError(error).reason}`, { cause: error });
     }
   }
-  const brokenTables = new Set<Mt5TableName>();
   for (const ix of SCHEMA_INDEX_STATEMENTS) {
     try {
       await pool.request().query(ix.sql);
-    } catch (e) {
-      const refs = tablesReferencedInErrorMessage(e);
-      for (const r of refs) brokenTables.add(r);
-      if (!refs.includes(ix.table)) brokenTables.add(ix.table);
+    } catch (error) {
+      throw new Error(`Schema index '${ix.name}' failed: ${classifyMssqlError(error).reason}`, { cause: error });
     }
-  }
-  if (brokenTables.size) {
-    const toFix = Array.from(brokenTables);
-    console.warn(`[mssql] ensureSchema: rebuilding ${toFix.join(", ")} to repair schema`);
-    await rebuildTables(pool, toFix);
   }
 }
 
 export async function ensureInitialized(): Promise<ConnectionPool> {
+  if (!MSSQL_CONFIG.appPassword) {
+    throw new Error("MSSQL_APP_PASSWORD must be configured; insecure defaults are not permitted");
+  }
   if (appPool && appPool.connected) return appPool;
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    try {
-      await ensureDatabaseAndUser();
-    } catch (e) {
-      const msg = (e as Error).message || String(e);
-      if (!msg.toLowerCase().includes("already") && !msg.toLowerCase().includes("duplicate") && !msg.toLowerCase().includes("exists")) {
-        console.warn(`[mssql] Proceeding without auto-create: ${msg}`);
-      }
-    }
-
     try {
       if (!appPool || appPool.connected === false) {
         appPool = new ConnectionPool(appConfig());
@@ -688,7 +643,24 @@ export async function ensureInitialized(): Promise<ConnectionPool> {
             if (patch.tcp_ok !== false) { patch.tcp_ok = true; patch.server_reachable = true; }
           }
           setDiag(patch);
-          throw e;
+          try { await appPool.close(); } catch { /* noop */ }
+          appPool = null;
+
+          // Existing installations should run entirely as the least-privilege
+          // application login. Admin credentials are only a bootstrap fallback
+          // when the database/login does not exist yet.
+          if (!MSSQL_CONFIG.password) {
+            throw new Error(`Application database login failed and MSSQL_ADMIN_PASSWORD is not configured: ${cls.reason}`, { cause: e });
+          }
+          await ensureDatabaseAndUser();
+          appPool = new ConnectionPool(appConfig());
+          await appPool.connect();
+          setDiag({
+            app_user_ok: true,
+            app_reason: null,
+            server_reachable: true,
+            tcp_ok: true,
+          });
         }
       }
       try {

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +25,17 @@ class FakeRedis:
     def get(self, key: str) -> str | None:
         return self._kv.get(key)
 
-    def set(self, key: str, value: str) -> None:
+    def set(self, key: str, value: str, *, nx: bool = False) -> bool:
+        if nx and key in self._kv:
+            return False
         self._kv[key] = value
+        return True
+
+    def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:
+        key = f"stream-count:{stream}"
+        count = int(self._kv.get(key, "0")) + 1
+        self._kv[key] = str(count)
+        return f"{count}-0"
 
 
 def test_settings_yaml_plus_env_override(tmp_path, monkeypatch: pytest.MonkeyPatch):
@@ -124,3 +136,71 @@ def test_control_mutations_require_admin_token(monkeypatch: pytest.MonkeyPatch):
     with TestClient(app) as c:
         assert c.post("/control/start").status_code == 401
         assert c.post("/control/start", headers={"x-admin-token": "secret-token"}).status_code == 200
+
+
+def test_control_mutations_fail_closed_without_configured_token(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("JSON_LOGS", "false")
+    monkeypatch.delenv("ADMIN_API_TOKEN", raising=False)
+
+    repo_root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(repo_root / "services" / "control-api"))
+    from app.main import create_app as create_control_app  # type: ignore  # noqa: E402
+
+    with TestClient(create_control_app(redis_client=FakeRedis())) as c:
+        assert c.post("/control/start").status_code == 503
+
+
+def test_execution_route_suppresses_duplicate_client_order_id():
+    repo_root = Path(__file__).resolve().parents[1]
+    engine_path = repo_root / "services" / "execution-service" / "app" / "engine.py"
+    spec = importlib.util.spec_from_file_location("execution_engine_test", engine_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    r = FakeRedis()
+    engine = module.ExecutionEngine(
+        redis_client=r,
+        route_mode="MT5",
+        symbol="XAUUSD",
+        stream_decisions="stream:decisions",
+        stream_orders="stream:orders",
+        stream_executions="stream:executions",
+        key_last_exec_ts="last:exec",
+        key_last_decision_id="last:decision",
+        max_order_size=0.1,
+        control_key="control:running",
+        kill_key="control:kill",
+        mode_key="control:mode",
+    )
+    order = {"client_order_id": "stable-1"}
+    assert engine._route_order(order) is True
+    assert engine._route_order(order) is False
+    assert r.get("stream-count:stream:orders") == "1"
+
+
+def test_monitoring_watchdog_halts_without_summary_request(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = tmp_path / "monitoring.yaml"
+    cfg.write_text(
+        "services:\n  monitoring-service:\n    watchdog_interval_s: 0.01\n    feed_stale_halt_ms: 10\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONFIG_FILE", str(cfg))
+    monkeypatch.setenv("JSON_LOGS", "false")
+
+    api_path = repo_root / "services" / "monitoring-service" / "app" / "api.py"
+    spec = importlib.util.spec_from_file_location("monitoring_api_test", api_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    r = FakeRedis()
+    r.set("control:running", "1")
+    r.set("telemetry:last_tick_ts", (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())
+    with TestClient(module.create_app(redis_client=r)):
+        deadline = time.time() + 1
+        while time.time() < deadline and r.get("control:kill") != "1":
+            time.sleep(0.01)
+        assert r.get("control:kill") == "1"
+        assert r.get("control:running") == "0"

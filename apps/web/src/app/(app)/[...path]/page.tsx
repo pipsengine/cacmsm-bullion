@@ -79,6 +79,10 @@ export default function AnyPage() {
     return <Mt5AccountSyncPage />;
   }
 
+  return <GenericPage pathname={pathname} />;
+}
+
+function GenericPage({ pathname }: { pathname: string }) {
   const info = useMemo(() => findNavItem(pathname), [pathname]);
 
   const [control, setControl] = useState<ControlStatus | null>(null);

@@ -100,13 +100,21 @@ class ExecutionEngine:
         fill = round(base + slip, 5)
         self._emit_execution(order["client_order_id"], "FILLED", "filled by simulator", fill_price=fill)
 
-    def _route_order(self, order: dict):
+    def _route_order(self, order: dict) -> bool:
+        # This Redis claim closes the crash window between publishing an order and
+        # updating the optional SQL idempotency record. A stable client_order_id is
+        # also passed to the broker connector for downstream deduplication.
+        claim_key = f"execution:routed:{order['client_order_id']}"
+        if not self._r.set(claim_key, "1", nx=True):
+            log.warning("duplicate order route suppressed", extra={"fields": {"client_order_id": order["client_order_id"]}})
+            return False
         if self._route_mode == "SIMULATOR":
             self._simulate_fill(order)
         else:
             # In MT5 mode, we publish to stream:orders for mt5-connector-worker to consume.
             xadd_json(self._r, self._stream_orders, order)
             self._emit_execution(order["client_order_id"], "ACCEPTED", "routed to MT5 connector worker")
+        return True
 
     def _validate_trade_decision(self, raw: dict) -> DecisionIntent | None:
         try:

@@ -1,155 +1,84 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withDb, jsonErr, jsonOk } from "../../../../../../lib/mt5-route-helpers";
 import {
-  applySyncSnapshot,
-  finishSyncRun,
-  getAccount,
-  insertSyncLog,
-  listSyncLogs,
-  listSyncRuns,
-  startSyncRun,
-  type SyncTrigger
+  applySyncSnapshot, finishSyncRun, getAccount, insertSyncLog, listSyncLogs,
+  listSyncRuns, startSyncRun, type SyncTrigger
 } from "../../../../../../lib/mt5-account-sync";
 import { ensureInitialized } from "../../../../../../lib/mssql";
+import { readMt5Terminal } from "../../../../../../lib/mt5-terminal-bridge";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function sleep(ms: number) {
-  return new Promise<void>((res) => setTimeout(res, ms));
-}
+type RouteContext = { params: Promise<{ id: string }> };
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_req: NextRequest, { params }: RouteContext) {
+  const { id } = await params;
   return withDb(async () => {
     const [runs, logs] = await Promise.all([
-      listSyncRuns({ accountId: params.id, limit: 30 }),
-      listSyncLogs({ accountId: params.id, limit: 150 })
+      listSyncRuns({ accountId: id, limit: 30 }), listSyncLogs({ accountId: id, limit: 150 })
     ]);
     return jsonOk({ ok: true, runs, logs });
   });
 }
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
-  try { await ensureInitialized(); } catch (e) { return jsonErr(e); }
+export async function POST(req: NextRequest, { params }: RouteContext) {
+  const { id } = await params;
+  try { await ensureInitialized(); } catch (error) { return jsonErr(error); }
   try {
-    const accountId = params.id;
-    const acc = await getAccount(accountId, { includeSecrets: true });
-    if (!acc) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404, headers: { "cache-control": "no-store" } });
-
-    let body: { trigger?: SyncTrigger; simulate?: boolean; snapshot?: any } = {};
+    const acc = await getAccount(id, { includeSecrets: true });
+    if (!acc) return NextResponse.json({ ok: false, message: "Account not found." }, { status: 404 });
+    let body: { trigger?: SyncTrigger } = {};
     try { body = await req.json(); } catch { body = {}; }
-
-    const trigger: SyncTrigger = body.trigger ?? "MANUAL";
     const started = Date.now();
-    const run = await startSyncRun({ account_id: accountId, trigger });
-    await insertSyncLog({
-      account_id: accountId,
-      sync_run_id: run.id,
-      level: "INFO",
-      category: "SYNC",
-      message: `Resolving MT5 account #${acc.account_login} on ${acc.account_server} via connector…`
-    });
-
+    const run = await startSyncRun({ account_id: id, trigger: body.trigger ?? "MANUAL" });
+    await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "INFO", category: "SYNC",
+      message: `Resolving MT5 account #${acc.account_login} through the local terminal...` });
     try {
-      await sleep(300);
-      await insertSyncLog({
-        account_id: accountId,
-        sync_run_id: run.id,
-        level: "INFO",
-        category: "CONN",
-        message: `Connector handshake OK (simulated). Account mode ${acc.account_mode}.`
+      const terminal = await readMt5Terminal();
+      if (!terminal.connected) throw new Error("The local MetaTrader 5 terminal is not connected.");
+      if (Number(terminal.account.login) !== Number(acc.account_login)) {
+        throw new Error(`MT5 is logged in as #${terminal.account.login}, but this record is #${acc.account_login}.`);
+      }
+      const account = terminal.account;
+      const positions = terminal.positions.length;
+      const pending = terminal.pending_orders.length;
+      const deals = terminal.deals.length;
+      await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "INFO", category: "CONN",
+        message: `Connected to ${String(terminal.terminal.name || "MetaTrader 5")} build ${String(terminal.terminal.build || "unknown")} on ${account.server}.` });
+      await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "INFO", category: "ACCT",
+        message: `Equity $${account.equity.toLocaleString()} | Margin $${account.margin.toLocaleString()} (${account.margin_level}%) | ${positions} open | ${pending} pending.` });
+      await applySyncSnapshot(id, {
+        login: account.login, server: account.server, company: account.company,
+        currency: account.currency, leverage: account.leverage,
+        balance: account.balance, equity: account.equity, margin: account.margin,
+        free_margin: account.free_margin, margin_level: account.margin_level,
+        floating_pl: account.floating_pl, profit_today: account.profit_today,
+        swap_today: account.swap_today, commission_today: account.commission_today,
+        positions_count: positions, orders_count: pending, deals_count: deals,
+        source: "SYNC", raw: terminal
       });
-
-      await sleep(300);
-      const baseEquity = acc.equity ?? (acc.account_mode === "LIVE" ? 25_000 : acc.account_mode === "PROP" ? 200_000 : 100_000);
-      const drift = (Math.random() * 2 - 1) * (baseEquity * 0.002);
-      const balance = Number((baseEquity + drift * 0.1).toFixed(2));
-      const equity = Number((baseEquity + drift).toFixed(2));
-      const floating = Number((drift * 0.6).toFixed(2));
-      const marginPct = 0.04 + Math.random() * 0.08;
-      const margin = Number((equity * marginPct).toFixed(2));
-      const free_margin = Number(Math.max(0, equity - margin).toFixed(2));
-      const margin_level = Number(margin > 0 ? ((equity / margin) * 100).toFixed(2) : 0);
-      const positions = 1 + Math.floor(Math.random() * 7);
-      const pending = Math.floor(Math.random() * 4);
-      const profitToday = Number(((Math.random() * 2 - 0.7) * baseEquity * 0.004).toFixed(2));
-
-      await insertSyncLog({
-        account_id: accountId,
-        sync_run_id: run.id,
-        level: "INFO",
-        category: "ACCT",
-        message: `Equity $${equity.toLocaleString()} • Margin $${margin.toLocaleString()} (${margin_level}%) • ${positions} open • ${pending} pending.`
-      });
-
-      await applySyncSnapshot(accountId, {
-        balance,
-        equity,
-        margin,
-        free_margin,
-        margin_level,
-        floating_pl: floating,
-        profit_today: profitToday,
-        positions_count: positions,
-        orders_count: pending,
-        deals_count: 40 + Math.floor(Math.random() * 120),
-        swap_today: Number((-Math.random() * 8).toFixed(2)),
-        commission_today: Number((-positions * 1.8 - Math.random() * 4).toFixed(2)),
-        source: "SYNC",
-        raw: { broker: acc.broker_name, login: acc.account_login, server: acc.account_server, simulated: true }
-      });
-
-      await insertSyncLog({
-        account_id: accountId,
-        sync_run_id: run.id,
-        level: "INFO",
-        category: "POS",
-        message: `Positions reconciled: ${positions} open, ${pending} pending, matched ${positions} / ${positions} (100%).`
-      });
-
-      const deals = 8 + Math.floor(Math.random() * 30);
-      await insertSyncLog({
-        account_id: accountId,
-        sync_run_id: run.id,
-        level: "INFO",
-        category: "DEAL",
-        message: `Deal history: ${deals} new tickets ingested since last sync window.`
-      });
-
-      await insertSyncLog({
-        account_id: accountId,
-        sync_run_id: run.id,
-        level: "SUCCESS",
-        category: "SYNC",
-        message: `Sync complete. P/L today $${profitToday >= 0 ? "+" : ""}${profitToday.toLocaleString()}.`
-      });
-
+      await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "INFO", category: "POS",
+        message: `Positions reconciled from MT5: ${positions} open and ${pending} pending.` });
+      await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "INFO", category: "DEAL",
+        message: `Deal history read from MT5: ${deals} tickets in the last 24 hours.` });
+      await insertSyncLog({ account_id: id, sync_run_id: run.id, level: "SUCCESS", category: "SYNC",
+        message: `Sync complete. P/L today $${account.profit_today >= 0 ? "+" : ""}${account.profit_today.toLocaleString()}.` });
       const finished = await finishSyncRun(run.id, {
-        status: "SUCCESS",
-        duration_ms: Date.now() - started,
-        balance_before: acc.balance ?? balance,
-        balance_after: balance,
-        equity_before: acc.equity ?? equity,
-        equity_after: equity,
-        positions_before: acc.positions_count ?? positions,
-        positions_after: positions,
-        orders_before: acc.orders_count ?? pending,
-        orders_after: pending,
-        deals_synced: deals,
-        positions_synced: positions,
-        orders_synced: pending,
-        gateway_info: `${acc.broker_name} • ${acc.account_server} • simulated bridge v1.0.4`
+        status: "SUCCESS", duration_ms: Date.now() - started,
+        balance_before: acc.balance ?? account.balance, balance_after: account.balance,
+        equity_before: acc.equity ?? account.equity, equity_after: account.equity,
+        positions_before: acc.positions_count ?? positions, positions_after: positions,
+        orders_before: acc.orders_count ?? pending, orders_after: pending,
+        deals_synced: deals, positions_synced: positions, orders_synced: pending,
+        gateway_info: `${account.company} | ${account.server} | local MT5 terminal`
       });
-
       return jsonOk({ ok: true, run: finished, message: "Sync complete." });
-    } catch (syncErr: any) {
-      await finishSyncRun(run.id, {
-        status: "FAILED",
-        duration_ms: Date.now() - started,
-        error_message: syncErr?.message ?? String(syncErr),
-        error_stack: syncErr?.stack ?? null
-      });
-      throw syncErr;
+    } catch (syncError) {
+      const error = syncError instanceof Error ? syncError : new Error(String(syncError));
+      await finishSyncRun(run.id, { status: "FAILED", duration_ms: Date.now() - started,
+        error_message: error.message, error_stack: error.stack ?? null });
+      throw error;
     }
-  } catch (e) { return jsonErr(e); }
+  } catch (error) { return jsonErr(error); }
 }

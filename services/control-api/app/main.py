@@ -72,7 +72,10 @@ def create_app(*, redis_client: Any | None = None) -> FastAPI:
 
     def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
         if not settings.admin_api_token:
-            return
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="ADMIN_API_TOKEN is not configured",
+            )
         if not x_admin_token or not secrets.compare_digest(x_admin_token, settings.admin_api_token):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid admin token")
 

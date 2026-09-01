@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { SERVICE_BASE } from "../../../_utils";
+import { readMt5Terminal, type Mt5TerminalSnapshot } from "../../../../../lib/mt5-terminal-bridge";
 
 export const runtime = "nodejs";
 
@@ -758,13 +759,82 @@ async function ingestFreshData() {
   };
 }
 
+function liveTerminalState(snapshot: Mt5TerminalSnapshot): TerminalState {
+  const now = snapshot.captured_at;
+  const terminal = snapshot.terminal;
+  const positions = snapshot.positions.map((item) => ({ ...item, open_ts_display: lagosDisplay(String(item.open_ts)) })) as PositionRow[];
+  const pendingOrders = snapshot.pending_orders.map((item) => ({ ...item, ts_display: lagosDisplay(String(item.ts)) })) as PendingOrderRow[];
+  const deals = snapshot.deals.map((item) => ({ ...item, ts_display: lagosDisplay(String(item.ts)) })) as DealRow[];
+  const closed = deals.filter((deal) => deal.entry === "OUT");
+  const wins = closed.filter((deal) => deal.profit > 0);
+  const losses = closed.filter((deal) => deal.profit < 0);
+  const grossProfit = wins.reduce((sum, deal) => sum + deal.profit, 0);
+  const grossLoss = Math.abs(losses.reduce((sum, deal) => sum + deal.profit, 0));
+  const symbols = snapshot.symbols.map((item) => {
+    const bid = Number(item.bid || 0);
+    const ask = Number(item.ask || 0);
+    const point = Number(item.point || 0);
+    return {
+      symbol: String(item.symbol), bid, ask, mid: (bid + ask) / 2,
+      spread: point ? (ask - bid) / point : 0, digits: Number(item.digits || 0),
+      source: "MT5", ts_display: lagosDisplay(String(item.time || now))
+    };
+  });
+  return {
+    generated_ts: now, generated_ts_display: lagosDisplay(now),
+    connection: {
+      status: snapshot.connected ? "CONNECTED" : "DISCONNECTED",
+      mt5_available: true, mt5_connected: snapshot.connected, route_mode: "MT5_LIVE_READ_ONLY",
+      feed_source: "MT5", gateway: `${snapshot.account.company} | ${snapshot.account.server}`,
+      last_connect_ts: snapshot.connected ? now : null, last_disconnect_ts: snapshot.connected ? null : now,
+      reconnect_attempts: 0, next_reconnect_s: null,
+      symbols_total: Number(terminal.symbols_total || symbols.length), symbols_selected: symbols.length
+    },
+    terminal: {
+      name: String(terminal.name || "MetaTrader 5"), path: String(terminal.path || ""),
+      version: String(terminal.version || "5.00"), build: Number(terminal.build || 0), pid: Number(terminal.pid || 0),
+      data_folder: String(terminal.data_path || ""), community: Boolean(terminal.community_connection),
+      experts_enabled: !Boolean(terminal.tradeapi_disabled), dlls_enabled: Boolean(terminal.dlls_allowed),
+      trade_allowed: Boolean(snapshot.account.trade_allowed), max_bars: Number(terminal.maxbars || 0),
+      cpu_cores: Number(terminal.cpu_cores || 0), memory_mb_used: Number(terminal.memory_mb_used || 0),
+      memory_mb_total: Number(terminal.memory_mb_total || 0), last_timeout_ms: Number(terminal.ping_last || 0) / 1000
+    },
+    account: snapshot.account, symbols, positions, pending_orders: pendingOrders, deals,
+    logs: [{ ts: now, ts_display: lagosDisplay(now), level: "SUCCESS", category: "SYNC",
+      message: `Live MT5 snapshot loaded for account #${snapshot.account.login} on ${snapshot.account.server}.` }],
+    stats: {
+      total_ticks_processed: 0, total_orders: pendingOrders.length, total_deals: deals.length,
+      total_rejects: 0, avg_slippage_pips: 0, max_dd_pct: 0,
+      win_rate_pct: closed.length ? (wins.length / closed.length) * 100 : 0,
+      profit_factor: grossLoss ? grossProfit / grossLoss : grossProfit > 0 ? 9.99 : 0,
+      expectancy_per_lot: 0, deals_24h: deals.length, orders_24h: pendingOrders.length
+    }
+  };
+}
+
 export async function GET() {
-  const { mt5Connected, feedSource } = await ingestFreshData();
-  const state = simState.snapshot(mt5Connected, feedSource);
-  return NextResponse.json(state, { status: 200, headers: { "cache-control": "no-store" } });
+  if (process.env.MT5_TERMINAL_MODE === "SIMULATOR") {
+    const { mt5Connected, feedSource } = await ingestFreshData();
+    return NextResponse.json(simState.snapshot(mt5Connected, feedSource), { headers: { "cache-control": "no-store" } });
+  }
+  try {
+    return NextResponse.json(liveTerminalState(await readMt5Terminal()), { headers: { "cache-control": "no-store" } });
+  } catch (error) {
+    const state = simState.snapshot(false, "MT5");
+    state.account = { login: 0, server: "", company: "", currency: "USD", leverage: 0,
+      balance: 0, equity: 0, margin: 0, free_margin: 0, margin_level: 0, floating_pl: 0,
+      profit_today: 0, swap_today: 0, commission_today: 0, deposits_total: 0, credit: 0 };
+    state.positions = []; state.pending_orders = []; state.deals = []; state.symbols = [];
+    state.logs = [{ ts: nowISO(), ts_display: lagosDisplay(nowISO()), level: "ERROR", category: "CONN",
+      message: error instanceof Error ? error.message : String(error) }];
+    return NextResponse.json(state, { status: 503, headers: { "cache-control": "no-store" } });
+  }
 }
 
 export async function POST(req: NextRequest) {
+  if (process.env.MT5_TERMINAL_MODE !== "SIMULATOR") {
+    return NextResponse.json({ ok: false, message: "Live MT5 access is read-only; trading actions are disabled." }, { status: 501 });
+  }
   let body: any = null;
   try {
     body = await req.json();

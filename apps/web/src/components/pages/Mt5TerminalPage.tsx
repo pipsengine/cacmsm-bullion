@@ -416,7 +416,7 @@ export default function Mt5TerminalPage() {
       return (
         <div className="t5Banner t5BannerOk">
           <span>
-            <strong>Bridge live.</strong> Terminal {state.terminal.name} build {state.terminal.build} on {state.connection.gateway} — submitting directly to account #{state.account.login} on {state.account.server}.
+            <strong>Bridge live (read-only).</strong> Terminal {state.terminal.name} build {state.terminal.build} on {state.connection.gateway} — reading account #{state.account.login} on {state.account.server}. Trade submission is disabled.
           </span>
           <span>{state.connection.symbols_selected}/{state.connection.symbols_total} symbols in Market Watch • Experts {state.terminal.experts_enabled ? "ON" : "OFF"}</span>
         </div>

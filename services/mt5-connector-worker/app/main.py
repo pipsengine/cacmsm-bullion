@@ -16,6 +16,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 STREAM_ORDERS = os.environ.get("STREAM_ORDERS", "stream:orders")
 STREAM_EXECUTIONS = os.environ.get("STREAM_EXECUTIONS", "stream:executions")
 SYMBOL = os.environ.get("SYMBOL", "XAUUSD")
+CHECKPOINT_KEY = os.environ.get("MT5_CHECKPOINT_KEY", "telemetry:last_order_id:mt5-connector")
 
 r = Redis.from_url(REDIS_URL, decode_responses=True)
 
@@ -35,7 +36,7 @@ def xread_json(stream: str, last_id: str, block_ms: int = 2000, count: int = 25)
         new_last = entry_id
         raw = fields.get("json")
         if raw:
-            out.append(json.loads(raw))
+            out.append((entry_id, json.loads(raw)))
     return out, new_last
 
 
@@ -88,16 +89,23 @@ def main():
     else:
         print("MetaTrader5 package not available. Running in skeleton mode (will reject orders).")
 
-    last_id = "0-0"
+    # On first startup consume already-queued orders; subsequent startups resume
+    # strictly after the durable checkpoint.
+    last_id = r.get(CHECKPOINT_KEY) or "0-0"
     while True:
         batch, last_id = xread_json(STREAM_ORDERS, last_id, block_ms=1500, count=25)
         if not batch:
             continue
 
-        for order in batch:
+        for entry_id, order in batch:
             if order.get("symbol") != SYMBOL:
+                r.set(CHECKPOINT_KEY, entry_id)
                 continue
             client_order_id = order.get("client_order_id", "unknown")
+            claim_key = f"mt5:order:claimed:{client_order_id}"
+            if not r.set(claim_key, "1", nx=True):
+                r.set(CHECKPOINT_KEY, entry_id)
+                continue
             side = order.get("side")
             size = float(order.get("size", 0.0))
 
@@ -113,6 +121,7 @@ def main():
                         "fill_price": None,
                     },
                 )
+                r.set(CHECKPOINT_KEY, entry_id)
                 continue
 
             ok, msg, fill = connector.send_market_order(SYMBOL, side, size)
@@ -127,6 +136,7 @@ def main():
                     "fill_price": fill,
                 },
             )
+            r.set(CHECKPOINT_KEY, entry_id)
 
         time.sleep(0.05)
 

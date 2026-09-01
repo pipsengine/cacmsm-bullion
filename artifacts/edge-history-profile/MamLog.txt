@@ -1,0 +1,15 @@
+[2026-09-01T12:25:37.870Z] [INFO] ========================================================================================================================
+[2026-09-01T12:25:37.870Z] [INFO] Initializing MAM Client.
+App: com.microsoft.edge 152.0.4191.53
+SDK: 2.1.367.0
+OS: windows 10.0.26200.9168
+DeviceType: Desktop
+Manufacturer: HP
+Model: HP EliteBook x360 1030 G8 Notebook PC
+Telemetry: yes
+Managed device support: enabled
+[2026-09-01T12:25:37.870Z] [INFO] Telemetry session c3bc635a-3ac1-43db-afc9-c43c5f6e28e1.
+[2026-09-01T12:25:37.870Z] [INFO] Initializing cache (v1).
+[2026-09-01T12:26:03.209Z] [INFO] Shutting down.
+[2026-09-01T12:26:03.209Z] [INFO] Stopping the task scheduler and canceling any outstanding work items...
+[2026-09-01T12:26:03.209Z] [INFO] Task scheduler has stopped, and all work has been canceled.

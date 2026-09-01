@@ -5,6 +5,7 @@ __pycache__/
 *.egg
 .env
 .env.*
+!/.env.example
 .secrets/
 secrets/*.txt
 .venv/

@@ -1,0 +1,216 @@
+{
+   "checksum": "570bcda89134d76b3f65d82fe32f9c06",
+   "roots": {
+      "bookmark_bar": {
+         "children": [ {
+            "date_added": "13246201808904707",
+            "date_last_used": "0",
+            "guid": "8cfd95f4-22d5-4657-ab5d-627f62eb6531",
+            "id": "7",
+            "name": "United States 10-Year Bond Yield - Investing.com NG",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://ng.investing.com/rates-bonds/u.s.-10-year-bond-yield",
+            "visit_count": 0
+         }, {
+            "date_added": "13246201958088696",
+            "date_last_used": "0",
+            "guid": "bbda6d51-7731-4714-b534-6d0ab7013caa",
+            "id": "8",
+            "name": "US10Y Charts and Quotes — TradingView",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.tradingview.com/symbols/TVC-US10Y/",
+            "visit_count": 0
+         }, {
+            "date_added": "13246201965640080",
+            "date_last_used": "0",
+            "guid": "ea3966d0-9b37-4c1d-bb6e-05d0613ef525",
+            "id": "9",
+            "name": "US10Y: 0.704 0.027 (0.00%) – Stock Price, Quote and News - CNBC",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.cnbc.com/quotes/?symbol=US10Y",
+            "visit_count": 0
+         }, {
+            "date_added": "13246201977208894",
+            "date_last_used": "0",
+            "guid": "f53174b2-825d-4211-aff7-d79301a6177b",
+            "id": "10",
+            "name": "10-Year T-Note Dec '20 Futures Interactive Chart - Barchart.com",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.barchart.com/futures/quotes/ZNZ20/interactive-chart#",
+            "visit_count": 0
+         }, {
+            "date_added": "13247606559442834",
+            "date_last_used": "0",
+            "guid": "1403cc8e-af18-483d-8b2e-0e09edce62f8",
+            "id": "11",
+            "name": "EURUSD 1.17730 ▲ +0.51% My Analysis",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.tradingview.com/chart/xdqcxUgu/",
+            "visit_count": 0
+         }, {
+            "date_added": "13248559036056433",
+            "date_last_used": "0",
+            "guid": "429dad01-57d7-4db6-8187-c47595599e84",
+            "id": "12",
+            "name": "Futures & Options Trading for Risk Management - CME Group",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.cmegroup.com/",
+            "visit_count": 0
+         }, {
+            "date_added": "13248619749890274",
+            "date_last_used": "0",
+            "guid": "4694c00c-2e66-4500-a738-350127bd7901",
+            "id": "13",
+            "name": "Sage X3 People Portal",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://129.18.144.131:28880/xtend/page?SOL=X3PEOPLE&FLDR=X3PDLELIVE&SITE=PEOPLELIVE&LANG=ENG&DEBUG=false",
+            "visit_count": 0
+         }, {
+            "date_added": "13248643805378102",
+            "date_last_used": "0",
+            "guid": "8f633501-c5eb-4d41-b54f-f8a8313510ff",
+            "id": "14",
+            "name": "Cot & Open Interest For Non-Commercials Traders - Google Sheets",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://docs.google.com/spreadsheets/d/14v7MiB2q1okhwXZ-fseGaQkuZ7kwzyfOiudzkBu8ZPQ/edit#gid=0",
+            "visit_count": 0
+         }, {
+            "date_added": "13305725722094714",
+            "date_last_used": "13398883307632719",
+            "guid": "a729c841-7428-45fe-b67d-8dfab186d5fd",
+            "id": "15",
+            "name": "Enterprise Management",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://129.18.144.131:8124/auth/login/page",
+            "visit_count": 4
+         }, {
+            "date_added": "13257006297276215",
+            "date_last_used": "13396356018884245",
+            "guid": "9d66371a-6cf3-4de4-bbdf-b6fed0251319",
+            "id": "16",
+            "name": "Enterprise Management",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://192.168.5.8:8124/auth/login/page",
+            "visit_count": 2
+         }, {
+            "date_added": "13265196925934836",
+            "date_last_used": "13378996641698189",
+            "guid": "5b305b18-a60c-4b5f-99f4-f2c83e2e76e4",
+            "id": "17",
+            "name": "The Complete Foundation FOREX Trading Course | Udemy",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.udemy.com/course/the-complete-foundation-forex-trading-course/learn/lecture/14733088#overview",
+            "visit_count": 3
+         }, {
+            "date_added": "13302712827781152",
+            "date_last_used": "0",
+            "guid": "fdb950d4-5bc8-4734-a850-70faf50e2ee6",
+            "id": "18",
+            "name": "Home - Dorman Long Engineering",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://www.dormanlongeng.com/",
+            "visit_count": 0
+         }, {
+            "date_added": "13307793680717769",
+            "date_last_used": "13334080305316439",
+            "guid": "11780c64-ac9f-41aa-a6c1-b741151ed919",
+            "id": "19",
+            "name": "Expenses form entry - edit (Expense Manager) (DLE Sage X3 BMS Live Folder)",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://192.168.5.8:8124/syracuse-main/html/main.html?url=%2Ftrans%2Fx3%2Ferp%2FX3DLE%2F%24sessions%3Ff%3DGESEXS%252F2%252F%252FM%252F%26profile%3D~(loc~%27en-US~role~%27612d9c84-8e50-48bf-9dec-ecd2e930f20d~ep~%2789f03910-f40b-47d1-8448-1ec4d7cb7d8c~appConn~())",
+            "visit_count": 0
+         }, {
+            "date_added": "13247238894233132",
+            "date_last_used": "13355225335285666",
+            "guid": "cc67dd19-57e4-4475-a55e-b6c2270a0436",
+            "id": "20",
+            "name": "Sign in to your account",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "https://login.microsoftonline.com/common/login",
+            "visit_count": 0
+         }, {
+            "date_added": "13337250021302668",
+            "date_last_used": "13352907015131247",
+            "guid": "25806680-0131-41af-bbcf-7c896f7f5558",
+            "id": "21",
+            "name": "Sage X3",
+            "show_icon": false,
+            "source": "sync",
+            "type": "url",
+            "url": "http://192.168.5.7:8124/auth/login/page",
+            "visit_count": 0
+         } ],
+         "date_added": "13432739137104944",
+         "date_last_used": "0",
+         "date_modified": "13337250021302668",
+         "guid": "0bc5d13f-2cba-5d74-951f-3f233fe6c908",
+         "id": "1",
+         "name": "Favorites bar",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "other": {
+         "children": [  ],
+         "date_added": "13432739137104944",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "82b081ec-3dd3-529c-8475-ab6c344590dd",
+         "id": "2",
+         "name": "Other favorites",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "synced": {
+         "children": [  ],
+         "date_added": "13432739137104944",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "4cf2e351-0e85-532b-bb37-df045d8f8d0f",
+         "id": "3",
+         "name": "Mobile favorites",
+         "source": "unknown",
+         "type": "folder"
+      },
+      "workspaces_v2": {
+         "children": [  ],
+         "date_added": "13432739137104944",
+         "date_last_used": "0",
+         "date_modified": "0",
+         "guid": "75aa6670-344f-549d-b742-660f029506ab",
+         "id": "5",
+         "name": "Workspaces",
+         "source": "unknown",
+         "type": "folder"
+      }
+   },
+   "sync_metadata": "CpsBCh4IiIECEgixLOpcoAEAACoOEAAYASAAKAQwADgAQAASABpYUEVwbVZUem9PWEZ5Vk5MeG1IY00zRkFHdDlWYzJzc0dEbWY3NlQxbCtyNUlvb0NzUWNkeEFnc3k2RitWZytVUG1XZTYyZDdIekpucW1hZTJRbVdOanc9PSoYR2NlVy9oQmJXWUlZRXBMQ3B6TjZ5QT09SAOgBgwSjgEIAhKJAQocWWNTVG9udkVTUHdxQ3M0TDJjclZodjY4TDk4PRIkMDg4OWNiZWYtZWRiMy01YTQ1LTg2ZDEtYWZjODU4MTVjNWU4GAAgACgAMJHK85jYLjjlzqC8qy9A5c6gvKsvShxvUFZraHdCUmJWNjVLQ1dSMitJT05IV29PdTg9ZQAAAABqAMI+AmAAErABCBQSqwEKHHBpNzBoVFVXNHJUTEJxUmNqMUZXSGhJd0hPRT0SJGNjNjdkZDE5LTU3ZTQtNDQ3NS1hNTVlLWI2YzIyNzBhMDQzNhgAIAAoADC9isOl7zM4xrWb1OUxQMa1m9TlMUocREhZbHgybHdlVHg5alE3MVA1MW9HbDVZTERZPVogIh7//Tg0blMwc0FyUkxUQWJ2aUR0OVNENVd5ekR1TT1ly9T0x2oAwj4CYAUSsAEIExKrAQocQlI0cS9HWTAxVnFzZWxjdi9NL1NuWHNsY25FPRIkMTE3ODBjNjQtYWM5Zi00MWFhLWE2YzEtYjc0MTE1MWVkOTE5GAAgACgAMLONrMXOMziStJvU5TFAkrSb1OUxShxnQzkwRUdhQnNaWUN5MG04MExwYXdkVWVSNDQ9WiAiHv/7bnV1MGN5NHFKWnhPc3JIVTFEV0RGK0hSWXhZPWVIUjRuagDCPgJgBRKwAQgSEqsBChxvSVRMVGQ4UG1LM1lzbm1yYVBaY3gvenBVUnM9EiRmZGI5NTBkNC01YmM4LTQ3MzQtYTg1MC03MGZhZjUwZTJlZTYYACAAKAAwye+Qu84zOLm0m9TlMUC5tJvU5TFKHGt0YVNlRU1jZDZ1S0I3SlBJdXJ3UjdlZzNLST1aICIe//dOemJ5ektrK1BoVEh6WTduWDg1eXVmQ2FuVlE9ZU3S8qhqAMI+AmAFErABCBESqwEKHForQW83UnlWNXpmQkR0bzF2NWhXcDB2cHhzST0SJDViMzA1YjE4LWE2MGMtNGI1Zi05OWY0LWYyYzgzZTJlNzZlNBgAIAAoADDR75C7zjM48rOb1OUxQPKzm9TlMUocckd4NWZWUTdMK3A2ajlacmZTVFl0ZGhrUjFVPVogIh7/7m5LaU9WWWtyWjhHbzhPWmlBcDI1a1dWeEM2bz1lBKLWB2oAwj4CYAUSsAEIEBKrAQocWXYyMTArNzlJelZOYjBFdmFIdzhocTIzaXFFPRIkOWQ2NjM3MWEtNmNmMy00ZGU0LWJiZGYtYjZmZWQwMjUxMzE5GAAgACgAMM7vkLvOMzjatJvU5TFA2rSb1OUxShxhTW9FdmhKMlR5UXZsR2N6MWtxRU1mVVJwVjg9WiAiHv/cNSt6WkpheVF5eGZXbzMxVGN3cE9abFFHZ2FnPWWzXpN8agDCPgJgBRKwAQgPEqsBChx0MWk5WXErSEVud3lNb2g2N0djSCtYbGR4NmM9EiRhNzI5Yzg0MS03NDI4LTQ1ZmUtYjY3ZC04ZGZhYjE4NmQ1ZmQYACAAKAAwze+Qu84zOMrA377qMEDKwN++6jBKHEJUK1J6MTJuSHpKbVREZkJlZUR6amU3eHY3VT1aICIe/7lrUllLMmo2Q0ZCMHNYR3pjekxIbGZzUCt1aVk9ZbLAx4BqAMI+AmAFEq4BCAcSqQEKHFhrN0xXOFMwclRDTG0wdElVdzlPMXdqQ01GND0SJGZjNjljYjlhLTEzMDEtNDM4NC04YTA3LWNmMmYyMzQ5MzY2MxgAIAAoADDI75C7zjM4v8qhvKsvQL/KobyrL0ocR2RSYmdCYVNaTnZwdTFOdUE5bUcvRGoweG84PVoeIhxKYnp3NzJaeDA3ZjdnOVBTYTdGU0t5azhqMVE9ZQAAAABqAMI+AmAFEq8BCA0SqgEKHENtVUlHS0VVZFZNV2RidnVBS1FtTWF4TmN0ST0SJDZiYmFkOGI1LTViMzgtNGQ4NS05YWQ2LWNjYWEwNmFjZGU4NRgAIAAoADDS75C7zjM4gcqhvKsvQIHKobyrL0ocQkxMVlVrYW9TSDk3UkR5dFVZUnBETmZWbjJvPVofIh39cVlkMUFxUGdYWUlSdU13VFRZdllBek02V2FjPWUAAAAAagDCPgJgBRKvAQgMEqoBChx1UHlXZ2lFTGI5RmdJTHI2NndSVFFrOGQ1NnM9EiRkNzE3M2Y5Yi0xZDFhLTQ1MWQtYTYxYy1iNGFlMTQxM2E5ZDgYACAAKAAwx++Qu84zOMTRoLyrL0DE0aC8qy9KHHBqSnM2dGVidmszQXBBL2N6STZET0EveFE0cz1aHyId+isyOVc2WG5wSW5CM0ttdnA5cmFISE5TSDlpcz1liLQs7moAwj4CYAUSrwEICxKqAQocb2lIM1dHZDdyN1ArNEZCTTJiV1o2K0hMVmZjPRIkZWY2MzJkNzItN2JkZS00NGVlLWEwMzAtNTUxYzFjZjI2NDBjGAAgACgAMMrvkLvOMzj+0KC8qy9A/tCgvKsvShxLc0V2TnI1Wlg4WHNqRTFKV1BzOGszVm5Jclk9Wh8iHfRIL21YakhYUWxIQU9qY0hwR1UwN2R2K3NTSWM9ZX+3l+xqAMI+AmAFEq8BCAoSqgEKHGNYdVN2VVZVZzVLaEZncjBMYk9BZzkyMTRqRT0SJGE3ZTNjY2RlLWUwYmMtNDQwZC05YjdmLTZkMDg5MTNkYzkyORgAIAAoADDQ75C7zjM4/8ihvKsvQP/IobyrL0occFFncHQ4N1ltemZNTzRRd2ZIT1RNbk9kd0hzPVofIh3pWkQ1U1J3VkhtNk5MMlR2NS9uM1VSS1ZrdE40PWUAAAAAagDCPgJgBRKvAQgJEqoBChxpVEQ5elZIcDUzUGNrNkJkb293TXBBdW9zSWc9EiRhNDMzMDcwYy03M2EzLTQzOTktOGVjMC00NTExNDE3NDAxNWUYACAAKAAwzO+Qu84zOPzKobyrL0D8yqG8qy9KHEcrNUYxUTdnS3ZUam1QV0lUQjNnU1RVZlp2Zz1aHyId0nlXY3ZZenlFN1AzZ1Evbm50L0NuODR5TUw2MD1lAAAAAGoAwj4CYAUSsAEIFRKrAQocUnZTcURIY3k3VXhVZjkyNWRKWmM3aHNwd01ZPRIkMjU4MDY2ODAtMDEzMS00MWFmLWJiY2YtN2M4OTZmN2Y1NTU4GAAgACgAMLKNrMXOMziStZvU5TFAkrWb1OUxShxtbllNNjlqVEFXNm1wZzdvNDYzMWRhOXhKMm89WiAiHv/+eEVKK20wZGVNWkluVWwrcUJnOVcxSjIxcEpBPWUa759+agDCPgJgBRKvAQgOEqoBChxLbjRkTFFHRUl3QmszcFdwNytUd0lORDlNdjQ9EiRiNjEwODc5Zi03ZTA3LTQ4YjctOGU5ZS1kNmE0MjRmZWY2OTEYACAAKAAwz++Qu84zOITSoLyrL0CE0qC8qy9KHEdBdW05MGcyS1NwWjk0OXZtTUlLWXJmWUFQaz1aHyId/ko5S2wydVAyUzd3NVZXRkRmMk5CY3BYMnFVZz1loGbb6GoAwj4CYAUSjgEIARKJAQoceXhKLzZmdmtlY3I3a3A1RVF6QjR0V0xwZGJFPRIkMDM5ZDU5NGQtMDI2NS01Y2E1LWFmYzktMTI0NjI0ZTAwZGI1GAAgACgAMPLJ85jYLjiozqC8qy9AqM6gvKsvShxhUkNXTGdoRjliNUlucUtJRHZ1Si9qdlFrRmM9ZQAAAABqAMI+AmAAEq8BCAgSqgEKHHpHTVYvTCtqcFE0R0RGTk1OWFhTb3lpdlRhND0SJGJlZWRjNjA0LTI0NjEtNDg2ZS1iMTNiLTQ3ZWQxZTNhZWJhNhgAIAAoADDL75C7zjM4w8mhvKsvQMPJobyrL0ocbWhqWllUeE1iMER0QzBJU0FKdGdLTkpzY2I0PVofIh2lRkRGY1lGR3h4Y0M1NWFFZGd4Tm53V0UvWU1JPWUAAAAAagDCPgJgBRKOAQgDEokBChxuamdEdTg4ZUNydlhwODZwRDdmSEdjcUZwODg9EiRhZGEyNDA4Ni02M2YxLTU5MDItOTViYy0yZWUxZTEwZDQ3YWEYACAAKAAw7srzmNguOKTQoLyrL0Ck0KC8qy9KHHl6TkIwMWNuNTRBN2NSVTB1VCsvUGdtVHRVbz1lAAAAAGoAwj4CYAASjgEIBRKJAQocd1JCclpMKzZQQTlhdktnak5QN0pYRExjZnZzPRIkNTYzNGNjMzktMmMzOC01NDAyLTg2OGEtMWY3OWFmZWNkZjUyGAAgACgAMM/n0s+lMziy6NLPpTNAsujSz6UzShxubXg2NXNRRHZ4SThUZ0VlditBK250dG9TbjQ9ZQAAAABqAMI+AmAAMAA4AA==",
+   "version": 1
+}

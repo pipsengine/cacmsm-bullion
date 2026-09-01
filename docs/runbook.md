@@ -17,13 +17,14 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The compose stack binds service ports to `127.0.0.1` by default. Set
-`ADMIN_API_TOKEN` in `.env` before using the stack from any shared host; the web
-console forwards this token server-side for Control API mutations.
+The compose stack binds service ports to `127.0.0.1` by default and refuses to
+start until the required values in `.env.example` have been replaced. The web
+console is protected with HTTP Basic authentication and forwards the separate
+admin token server-side for Control API mutations.
 
 ### Start the system (control flag)
 ```bash
-curl -X POST http://localhost:8000/control/start
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://localhost:8000/control/start
 curl http://localhost:8000/control/status
 ```
 
@@ -79,7 +80,13 @@ curl http://localhost:8000/control/status
 
 ### 3.3 Duplicate orders after restart
 - Ensure Postgres is enabled and execution-service has `DB_ENABLED=1`.
-- Duplicate prevention is based on a stable idempotency key derived from the decision redis stream ID.
+- Keep Redis AOF persistence enabled; route claims and the MT5 worker checkpoint are stored in Redis.
+- Broker reconciliation by stable `client_order_id` is required before retrying an ambiguous live order.
+
+### 3.4 Legacy plaintext MT5 credential
+- Configure `MT5_CREDENTIAL_KEY` with 32 random bytes encoded as base64 or 64 hexadecimal characters.
+- Edit the account and re-enter its password. The update stores an AES-256-GCM encrypted value.
+- Stored passwords are never returned through browser-facing APIs.
 
 ---
 

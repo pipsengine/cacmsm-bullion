@@ -1,5 +1,6 @@
 import sql from "mssql";
 import { getPool } from "./mssql";
+import { decryptCredential, encryptCredential } from "./credential-crypto";
 
 export type AccountMode = "DEMO" | "PROP" | "LIVE";
 export type AccountStatus = "ACTIVE" | "INACTIVE" | "CONNECTING" | "ERROR" | "DISABLED";
@@ -116,13 +117,13 @@ export interface SyncResultSummary {
 
 type Row = Record<string, any>;
 
-function mapAccount(r: Row): Mt5Account {
+function mapAccount(r: Row, includeSecrets = false): Mt5Account {
   return {
     id: String(r.id),
     broker_name: r.broker_name,
     account_login: Number(r.account_login),
     account_server: r.account_server,
-    account_password: r.account_password ?? null,
+    account_password: includeSecrets ? decryptCredential(r.account_password) : null,
     account_mode: r.account_mode as AccountMode,
     currency: r.currency,
     leverage: Number(r.leverage),
@@ -227,7 +228,7 @@ export async function listAccounts(opts: { includeSecrets?: boolean; modeFilter?
   }
   if (clauses.length) where = "WHERE " + clauses.join(" AND ");
   const r = await req.query<Row>(`SELECT ${MT5_ACCOUNT_SELECT} FROM [mt5].[accounts] a ${where} ORDER BY a.is_active DESC, a.account_mode ASC, a.broker_name ASC, a.account_login ASC`);
-  return r.recordset.map(mapAccount);
+  return r.recordset.map((row) => mapAccount(row, Boolean(opts.includeSecrets)));
 }
 
 export async function getAccount(id: string, opts: { includeSecrets?: boolean } = {} ): Promise<Mt5Account | null> {
@@ -236,7 +237,7 @@ export async function getAccount(id: string, opts: { includeSecrets?: boolean } 
   req.input("id", sql.UniqueIdentifier, id);
   req.input("include_secrets", sql.Bit, opts.includeSecrets ? 1 : 0);
   const r = await req.query<Row>(`SELECT ${MT5_ACCOUNT_SELECT} FROM [mt5].[accounts] a WHERE a.id = @id`);
-  return r.recordset[0] ? mapAccount(r.recordset[0]) : null;
+  return r.recordset[0] ? mapAccount(r.recordset[0], Boolean(opts.includeSecrets)) : null;
 }
 
 export async function findAccountByLogin(login: number, server: string, opts: { includeSecrets?: boolean } = {} ): Promise<Mt5Account | null> {
@@ -246,7 +247,7 @@ export async function findAccountByLogin(login: number, server: string, opts: { 
   req.input("server", sql.NVarChar(256), server);
   req.input("include_secrets", sql.Bit, opts.includeSecrets ? 1 : 0);
   const r = await req.query<Row>(`SELECT ${MT5_ACCOUNT_SELECT} FROM [mt5].[accounts] a WHERE a.account_login = @login AND a.account_server = @server`);
-  return r.recordset[0] ? mapAccount(r.recordset[0]) : null;
+  return r.recordset[0] ? mapAccount(r.recordset[0], Boolean(opts.includeSecrets)) : null;
 }
 
 export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): Promise<Mt5Account> {
@@ -255,7 +256,7 @@ export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): 
   req.input("broker_name", sql.NVarChar(128), input.broker_name);
   req.input("account_login", sql.BigInt, input.account_login);
   req.input("account_server", sql.NVarChar(256), input.account_server);
-  req.input("account_password", sql.NVarChar(512), input.account_password ?? null);
+  req.input("account_password", sql.NVarChar(512), encryptCredential(input.account_password));
   req.input("account_mode", sql.NVarChar(16), input.account_mode);
   req.input("currency", sql.NVarChar(8), input.currency ?? "USD");
   req.input("leverage", sql.Int, input.leverage ?? 100);
@@ -279,7 +280,7 @@ export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): 
        @company, @status, @is_active, @sync_enabled, @sync_interval_seconds, @display_name, @tags, @notes, @created_by)
   `);
   const id = String(r.recordset[0].id);
-  const created = await getAccount(id, { includeSecrets: true });
+  const created = await getAccount(id);
   if (!created) throw new Error("Account creation failed to return row");
   await insertSyncLog({
     account_id: id,
@@ -291,7 +292,7 @@ export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): 
 }
 
 export async function updateAccount(id: string, input: AccountUpdateInput): Promise<Mt5Account | null> {
-  const existing = await getAccount(id, { includeSecrets: true });
+  const existing = await getAccount(id);
   if (!existing) return null;
   const pool = await getPool();
   const req = pool.request();
@@ -301,7 +302,7 @@ export async function updateAccount(id: string, input: AccountUpdateInput): Prom
     broker_name: { col: "broker_name", type: () => sql.NVarChar(128), value: input.broker_name },
     account_login: { col: "account_login", type: () => sql.BigInt, value: input.account_login },
     account_server: { col: "account_server", type: () => sql.NVarChar(256), value: input.account_server },
-    account_password: { col: "account_password", type: () => sql.NVarChar(512), value: input.account_password },
+    account_password: { col: "account_password", type: () => sql.NVarChar(512), value: input.account_password === undefined ? undefined : encryptCredential(input.account_password) },
     account_mode: { col: "account_mode", type: () => sql.NVarChar(16), value: input.account_mode },
     currency: { col: "currency", type: () => sql.NVarChar(8), value: input.currency },
     leverage: { col: "leverage", type: () => sql.Int, value: input.leverage },
@@ -324,15 +325,33 @@ export async function updateAccount(id: string, input: AccountUpdateInput): Prom
   if (!sets.length) return existing;
   sets.push("updated_at = SYSDATETIMEOFFSET()");
   await req.query(`UPDATE [mt5].[accounts] SET ${sets.join(", ")} WHERE id = @id`);
-  return getAccount(id, { includeSecrets: true });
+  return getAccount(id);
 }
 
 export async function deleteAccount(id: string): Promise<boolean> {
   const pool = await getPool();
-  const req = pool.request();
-  req.input("id", sql.UniqueIdentifier, id);
-  const r = await req.query("DELETE FROM [mt5].[accounts] OUTPUT DELETED.id WHERE id = @id");
-  return r.recordset.length > 0;
+  const tx = pool.transaction();
+  await tx.begin();
+  try {
+    const req = tx.request();
+    req.input("id", sql.UniqueIdentifier, id);
+    const r = await req.query(`
+      DELETE FROM [mt5].[sync_logs]
+       WHERE [account_id] = @id
+          OR [sync_run_id] IN (SELECT [id] FROM [mt5].[sync_runs] WHERE [account_id] = @id);
+      DELETE FROM [mt5].[positions] WHERE [account_id] = @id;
+      DELETE FROM [mt5].[pending_orders] WHERE [account_id] = @id;
+      DELETE FROM [mt5].[deals] WHERE [account_id] = @id;
+      DELETE FROM [mt5].[account_snapshots] WHERE [account_id] = @id;
+      DELETE FROM [mt5].[sync_runs] WHERE [account_id] = @id;
+      DELETE FROM [mt5].[accounts] OUTPUT DELETED.id WHERE [id] = @id;
+    `);
+    await tx.commit();
+    return r.recordset.length > 0;
+  } catch (error) {
+    try { await tx.rollback(); } catch { /* noop */ }
+    throw error;
+  }
 }
 
 export async function listSyncRuns(filter: { accountId?: string; limit?: number; status?: SyncStatus } = {}): Promise<SyncRun[]> {
@@ -369,8 +388,8 @@ export async function startSyncRun(input: { account_id: string; trigger?: SyncTr
   req.input("account_id", sql.UniqueIdentifier, input.account_id);
   req.input("trigger", sql.NVarChar(32), input.trigger ?? "MANUAL");
   const r = await req.query<Row>(`
-    INSERT INTO [mt5].[sync_runs] (account_id, status, trigger)
-    OUTPUT INSERTED.id, INSERTED.account_id, INSERTED.started_at, INSERTED.status, INSERTED.trigger
+    INSERT INTO [mt5].[sync_runs] ([account_id], [status], [trigger])
+    OUTPUT INSERTED.id, INSERTED.account_id, INSERTED.started_at, INSERTED.status, INSERTED.[trigger]
     VALUES (@account_id, 'RUNNING', @trigger)
   `);
   const row = r.recordset[0];
@@ -538,6 +557,8 @@ export async function getSummary(): Promise<SyncResultSummary> {
 }
 
 export async function applySyncSnapshot(accountId: string, snapshot: {
+  login?: number;
+  server?: string;
   balance: number;
   equity: number;
   margin: number;
@@ -563,8 +584,8 @@ export async function applySyncSnapshot(accountId: string, snapshot: {
     const req = tx.request();
     req.input("account_id", sql.UniqueIdentifier, accountId);
     req.input("captured_at", sql.DateTimeOffset, new Date());
-    req.input("login", sql.BigInt, 0);
-    req.input("server", sql.NVarChar(256), "");
+    req.input("login", sql.BigInt, snapshot.login ?? 0);
+    req.input("server", sql.NVarChar(256), snapshot.server ?? "");
     req.input("company", sql.NVarChar(256), snapshot.company ?? null);
     req.input("currency", sql.NVarChar(8), snapshot.currency ?? "USD");
     req.input("leverage", sql.Int, snapshot.leverage ?? 100);
@@ -585,6 +606,8 @@ export async function applySyncSnapshot(accountId: string, snapshot: {
 
     const snap = await req.query<Row>(`
       UPDATE [mt5].[accounts] SET
+        account_login = CASE WHEN @login > 0 THEN @login ELSE account_login END,
+        account_server = ISNULL(NULLIF(@server, ''), account_server),
         balance = @balance,
         equity = @equity,
         margin = @margin,
@@ -598,6 +621,11 @@ export async function applySyncSnapshot(accountId: string, snapshot: {
         currency = ISNULL(NULLIF(@currency, ''), currency),
         leverage = CASE WHEN @leverage > 0 THEN @leverage ELSE leverage END,
         company = ISNULL(NULLIF(@company, ''), company),
+        status = 'ACTIVE',
+        is_active = 1,
+        last_sync_at = @captured_at,
+        last_sync_status = 'SUCCESS',
+        last_sync_message = 'Synchronized with the local MetaTrader 5 terminal.',
         updated_at = SYSDATETIMEOFFSET()
       OUTPUT INSERTED.account_login, INSERTED.account_server, INSERTED.company, INSERTED.currency, INSERTED.leverage
       WHERE id = @account_id;

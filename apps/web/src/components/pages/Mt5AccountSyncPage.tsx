@@ -913,7 +913,8 @@ export default function Mt5AccountSyncPage() {
       broker_name: acc.broker_name,
       account_login: String(acc.account_login),
       account_server: acc.account_server,
-      account_password: acc.account_password ?? "",
+      // Stored credentials are deliberately never returned to the browser.
+      account_password: "",
       account_mode: acc.account_mode,
       currency: acc.currency,
       leverage: String(acc.leverage),
@@ -938,9 +939,10 @@ export default function Mt5AccountSyncPage() {
         throw new Error("Broker, Login, and Server are required.");
       }
       if (editingId) {
+        const updateInput = form.account_password ? input : { ...input, account_password: undefined };
         const resp = await api<{ ok: boolean; account: Mt5Account }>(`/api/mt5-account-sync/accounts/${editingId}`, {
           method: "PUT",
-          body: JSON.stringify(input)
+          body: JSON.stringify(updateInput)
         });
         if (resp?.ok) {
           showToast("ok", `Account ${input.broker_name} #${input.account_login} updated.`);

@@ -23,7 +23,7 @@ It runs end-to-end in **SIMULATOR mode** (no broker required), and includes an *
   - `mt5-connector-worker` (local skeleton)
 - **docker-compose** stack now includes **Redis + Postgres**
 - **Postgres event persistence** (SQLAlchemy) for decisions/executions (best-effort)
-- **Idempotency** for order creation in `execution-service` (prevents duplicates after restarts)
+- **Idempotency** for order routing in `execution-service` and the MT5 worker (suppresses duplicate client order IDs after restarts)
 - **Structured JSON logging** (stdlib logging → JSON lines)
 - **Config via YAML + env override**
 - **Health/readiness endpoints** (`/healthz`, `/readyz`)
@@ -87,16 +87,31 @@ Services:
 ### 3) Start the system (activate trading)
 
 ```bash
-curl -X POST http://localhost:8000/control/start
+export ADMIN_API_TOKEN="replace-with-a-long-random-token"
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://localhost:8000/control/start
 curl http://localhost:8000/control/status
 ```
+
+On PowerShell, set `$env:ADMIN_API_TOKEN` and pass `-H "x-admin-token: $env:ADMIN_API_TOKEN"`.
+Control mutations fail closed with HTTP 503 when the server token is not configured.
+
+## Required production secrets
+
+Copy `.env.example` to `.env` and replace every placeholder before using Docker Compose. Compose now refuses to start without:
+
+- `ADMIN_API_TOKEN` for control mutations
+- `WEB_AUTH_USER` and `WEB_AUTH_PASSWORD` for the web console and its API routes
+- `MSSQL_ADMIN_PASSWORD` and `MSSQL_APP_PASSWORD` for SQL Server bootstrap/runtime access
+- `MT5_CREDENTIAL_KEY`, a 32-byte AES key used to encrypt MT5 passwords at rest
+
+Generate an encryption key with `openssl rand -base64 32`. Do not rotate this key without first decrypting and re-encrypting stored credentials. Existing plaintext MT5 passwords are rejected; edit each affected account and re-enter its password to migrate it to encrypted storage.
 
 ## Switching modes
 
 ```bash
-curl -X POST http://localhost:8000/control/mode/demo
-curl -X POST http://localhost:8000/control/mode/prop
-curl -X POST http://localhost:8000/control/mode/live
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://localhost:8000/control/mode/demo
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://localhost:8000/control/mode/prop
+curl -X POST -H "x-admin-token: $ADMIN_API_TOKEN" http://localhost:8000/control/mode/live
 ```
 
 ## Market Intelligence pages
@@ -133,3 +148,5 @@ See:
 ## Important note
 
 This MVP is an engineering starter-kit. It is not a promise of performance, profitability, or compliance with any prop firm's rules by default.
+
+The MT5 worker uses a stable client order ID, a persistent Redis checkpoint, and a claim key to favor duplicate prevention. A production connector must additionally reconcile that ID against broker order/deal history before retrying an order after an ambiguous network or process failure.
