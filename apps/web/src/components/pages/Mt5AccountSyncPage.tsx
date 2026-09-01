@@ -603,25 +603,7 @@ function normalizeBrokerName(raw: string): string {
   return raw.trim();
 }
 
-const DEFAULT_ACCOUNTS: Omit<Mt5Account, "id" | "created_at" | "updated_at">[] = [
-  {
-    broker_name: "IC Markets",
-    account_login: 40052178,
-    account_server: "ICMarkets-Demo",
-    account_password: "",
-    account_mode: "DEMO",
-    currency: "USD",
-    leverage: 500,
-    company: "IC Markets (EU) Ltd",
-    status: "INACTIVE",
-    is_active: true,
-    sync_enabled: true,
-    sync_interval_seconds: 30,
-    display_name: "IC Markets - Demo 01",
-    tags: "simulator-ready,mt5-host-required",
-    notes: "Simulator ready - MT5 host required for live routing"
-  }
-];
+const DEFAULT_ACCOUNTS: Omit<Mt5Account, "id" | "created_at" | "updated_at">[] = [];
 
 type MssqlDiagnostics = {
   ok: boolean;
@@ -682,6 +664,7 @@ type FormState = {
   currency: string;
   leverage: string;
   company: string;
+  status: AccountStatus;
   is_active: boolean;
   sync_enabled: boolean;
   sync_interval_seconds: string;
@@ -699,6 +682,7 @@ const EMPTY_FORM: FormState = {
   currency: "USD",
   leverage: "100",
   company: "",
+  status: "ACTIVE",
   is_active: true,
   sync_enabled: true,
   sync_interval_seconds: "30",
@@ -717,6 +701,7 @@ function formToInput(f: FormState) {
     currency: f.currency.trim() || "USD",
     leverage: parseInt(f.leverage || "0", 10) || 0,
     company: f.company.trim() || null,
+    status: f.status ?? (f.is_active ? "ACTIVE" : "INACTIVE"),
     is_active: f.is_active,
     sync_enabled: f.sync_enabled,
     sync_interval_seconds: parseInt(f.sync_interval_seconds || "0", 10) || 30,
@@ -919,7 +904,7 @@ export default function Mt5AccountSyncPage() {
 
   const startCreate = () => {
     setEditingId(null);
-    setForm({ ...EMPTY_FORM, account_mode: "DEMO", is_active: true, sync_enabled: true });
+    setForm({ ...EMPTY_FORM, account_mode: "DEMO", status: "ACTIVE", is_active: true, sync_enabled: true });
   };
 
   const startEdit = (acc: Mt5Account) => {
@@ -933,6 +918,7 @@ export default function Mt5AccountSyncPage() {
       currency: acc.currency,
       leverage: String(acc.leverage),
       company: acc.company ?? "",
+      status: acc.status,
       is_active: acc.is_active,
       sync_enabled: acc.sync_enabled,
       sync_interval_seconds: String(acc.sync_interval_seconds),

@@ -266,16 +266,18 @@ export default function Sidebar() {
           margin: "0 8px 12px",
           padding: 14,
           borderRadius: 16,
-          border: "1px solid rgba(109,124,255,0.25)",
-          background: "linear-gradient(180deg, rgba(109,124,255,0.15), rgba(109,124,255,0.05))"
+          border: "1px dashed rgba(255,255,255,0.10)",
+          background: "rgba(255,255,255,0.02)"
         }}
       >
         <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 800, letterSpacing: "0.08em" }}>
           ACTIVE ACCOUNT
         </div>
-        <div style={{ marginTop: 8, fontWeight: 800 }}>IC Markets - Demo 01</div>
+        <div style={{ marginTop: 8, fontWeight: 700, color: "var(--muted)" }}>
+          No account selected
+        </div>
         <div style={{ marginTop: 4, fontSize: 12, color: "var(--muted)" }}>
-          Simulator ready - MT5 host required for live routing
+          Select an MT5 account from the sync panel
         </div>
       </div>
 

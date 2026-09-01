@@ -87,6 +87,7 @@ export interface AccountInput {
   currency?: string;
   leverage?: number;
   company?: string | null;
+  status?: AccountStatus;
   is_active?: boolean;
   sync_enabled?: boolean;
   sync_interval_seconds?: number;
@@ -259,6 +260,7 @@ export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): 
   req.input("currency", sql.NVarChar(8), input.currency ?? "USD");
   req.input("leverage", sql.Int, input.leverage ?? 100);
   req.input("company", sql.NVarChar(256), input.company ?? null);
+  req.input("status", sql.NVarChar(32), input.status ?? "ACTIVE");
   req.input("is_active", sql.Bit, input.is_active ?? false);
   req.input("sync_enabled", sql.Bit, input.sync_enabled ?? true);
   req.input("sync_interval_seconds", sql.Int, input.sync_interval_seconds ?? 30);
@@ -270,11 +272,11 @@ export async function createAccount(input: AccountInput, createdBy = "SYSTEM"): 
   const r = await req.query<Row>(`
     INSERT INTO [mt5].[accounts]
       (broker_name, account_login, account_server, account_password, account_mode, currency, leverage,
-       company, is_active, sync_enabled, sync_interval_seconds, display_name, tags, notes, created_by)
+       company, status, is_active, sync_enabled, sync_interval_seconds, display_name, tags, notes, created_by)
     OUTPUT INSERTED.id
     VALUES
       (@broker_name, @account_login, @account_server, @account_password, @account_mode, @currency, @leverage,
-       @company, @is_active, @sync_enabled, @sync_interval_seconds, @display_name, @tags, @notes, @created_by)
+       @company, @status, @is_active, @sync_enabled, @sync_interval_seconds, @display_name, @tags, @notes, @created_by)
   `);
   const id = String(r.recordset[0].id);
   const created = await getAccount(id, { includeSecrets: true });
