@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import MetaTrader5 as mt5
@@ -25,6 +25,7 @@ FX_PAIRS = {
     for symbol in SYMBOLS
     if len(symbol) == 6 and symbol[:3] in FX_CURRENCIES and symbol[3:] in FX_CURRENCIES
 }
+TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1", "YTD"]
 LAGOS = ZoneInfo("Africa/Lagos")
 
 
@@ -38,6 +39,15 @@ def broker_clock_offset(latest_epoch: float) -> int:
     if 30 * 60 < abs(difference) < 14 * 60 * 60:
         return int(round(difference / 3600.0) * 3600)
     return 0
+
+
+def higher_timeframe_filter(values: dict[str, float]) -> str:
+    anchors = [float(values.get(timeframe, 50.0)) for timeframe in ("D1", "W1", "MN1")]
+    if all(value >= 70.0 for value in anchors):
+        return "STRONG"
+    if all(value < 40.0 for value in anchors):
+        return "WEAK"
+    return "NEUTRAL"
 
 
 def strength(prices: dict[str, float], references: dict[str, float]) -> dict[str, float]:
@@ -122,15 +132,143 @@ def status_payload(terminal, account) -> dict:
     }
 
 
+def snapshot_payload(terminal, hours: int = 24) -> dict:
+    now = datetime.now(timezone.utc)
+    present, missing, latest_prices, symbol_ticks = [], [], {}, []
+    newest_epoch = 0.0
+    raw_ticks = {}
+    for symbol in SYMBOLS:
+        mt5.symbol_select(symbol, True)
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            missing.append(symbol)
+            continue
+        raw_ticks[symbol] = tick
+        present.append(symbol)
+        newest_epoch = max(newest_epoch, float(tick.time_msc or tick.time * 1000) / 1000.0)
+        bid = float(tick.bid)
+        ask = float(tick.ask)
+        latest_prices[symbol] = (bid + ask) / 2.0
+
+    clock_offset = broker_clock_offset(newest_epoch) if newest_epoch else 0
+    broker_cutoff = datetime.fromtimestamp(now.timestamp() - hours * 3600 + clock_offset, timezone.utc)
+    year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=clock_offset)
+    year_search_end = year_start + timedelta(days=7)
+    references_by_timeframe: dict[str, dict[str, float]] = {timeframe: {} for timeframe in TIMEFRAMES}
+
+    def period_open(rates, period_seconds: int) -> float | None:
+        if rates is None or len(rates) == 0:
+            return None
+        period_start = int(rates[-1]["time"]) // period_seconds * period_seconds
+        candidates = [rate for rate in rates if int(rate["time"]) >= period_start]
+        rate = candidates[0] if candidates else rates[-1]
+        opening_price = float(rate["open"])
+        return opening_price if opening_price > 0.0 else None
+
+    for symbol, tick in raw_ticks.items():
+        raw_epoch = float(tick.time_msc or tick.time * 1000) / 1000.0
+        normalized_epoch = raw_epoch - clock_offset
+        bid = float(tick.bid)
+        ask = float(tick.ask)
+        symbol_ticks.append({
+            "symbol": symbol,
+            "ts_utc": iso(normalized_epoch),
+            "ts_display": datetime.fromtimestamp(normalized_epoch, timezone.utc).astimezone(LAGOS).isoformat(),
+            "bid": bid,
+            "ask": ask,
+            "spread": round(ask - bid, 8),
+            "mid": latest_prices[symbol],
+            "source": "MT5",
+        })
+        reference_ticks = mt5.copy_ticks_from(symbol, broker_cutoff, 1, mt5.COPY_TICKS_ALL)
+        for reference_tick in reference_ticks if reference_ticks is not None else ():
+            ref_bid = float(reference_tick["bid"])
+            ref_ask = float(reference_tick["ask"])
+            ref_last = float(reference_tick["last"])
+            ref_mid = (ref_bid + ref_ask) / 2.0 if ref_bid > 0.0 and ref_ask > 0.0 else ref_last
+            if ref_mid > 0.0:
+                references_by_timeframe["TICK"][symbol] = ref_mid
+            break
+        minute_rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 31)
+        for timeframe, seconds in {"M1": 60, "M5": 300, "M15": 900, "M30": 1800}.items():
+            opening_price = period_open(minute_rates, seconds)
+            if opening_price:
+                references_by_timeframe[timeframe][symbol] = opening_price
+        hour_rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, 13)
+        for timeframe, seconds in {"H1": 3600, "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200}.items():
+            opening_price = period_open(hour_rates, seconds)
+            if opening_price:
+                references_by_timeframe[timeframe][symbol] = opening_price
+        for timeframe, constant_name in {"D1": "TIMEFRAME_D1", "W1": "TIMEFRAME_W1", "MN1": "TIMEFRAME_MN1"}.items():
+            rates = mt5.copy_rates_from_pos(symbol, getattr(mt5, constant_name), 0, 1)
+            for rate in rates if rates is not None else ():
+                opening_price = float(rate["open"])
+                if opening_price > 0.0:
+                    references_by_timeframe[timeframe][symbol] = opening_price
+                break
+        year_rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_D1, year_start, year_search_end)
+        for rate in year_rates if year_rates is not None else ():
+            opening_price = float(rate["open"])
+            if opening_price > 0.0:
+                references_by_timeframe["YTD"][symbol] = opening_price
+            break
+
+    matrix = {currency: {} for currency in CURRENCIES}
+    for timeframe in TIMEFRAMES:
+        scores = strength(latest_prices, references_by_timeframe[timeframe])
+        percentages = strength_percentages(scores)
+        for currency in CURRENCIES:
+            matrix[currency][timeframe] = percentages[currency]
+    ranked = sorted(
+        [
+            {"currency": currency, "avg_bias": round(sum(matrix[currency].values()) / len(TIMEFRAMES), 1)}
+            for currency in CURRENCIES
+        ],
+        key=lambda item: item["avg_bias"],
+        reverse=True,
+    )
+    return {
+        "ts_utc": now.isoformat(),
+        "ts_display": now.astimezone(LAGOS).isoformat(),
+        "feed_source": "MT5",
+        "mt5_connected": bool(terminal.connected),
+        "mt5_error": None,
+        "total_ticks": len(symbol_ticks),
+        "symbols_present": present,
+        "missing_symbols": missing,
+        "symbols": symbol_ticks,
+        "currency_values": {currency: matrix[currency]["TICK"] for currency in CURRENCIES},
+        "matrix_rows": [
+            {
+                "currency": currency,
+                "values": matrix[currency],
+                "htf_filter": higher_timeframe_filter(matrix[currency]),
+            }
+            for currency in CURRENCIES
+        ],
+        "ranked_bias": ranked,
+        "value_unit": "percent",
+        "sampling": "live_mt5",
+    }
+
+
 def history_payload(terminal, hours: int, limit: int) -> dict:
     row_limit = max(1, min(5000, limit))
     references: dict[str, float] = {}
     now = datetime.now(timezone.utc)
-    cutoff_dt = now.timestamp() - hours * 3600
+    newest_epoch = 0.0
+    for symbol in SYMBOLS:
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is not None:
+            newest_epoch = max(newest_epoch, float(tick.time_msc or tick.time * 1000) / 1000.0)
+    clock_offset = broker_clock_offset(newest_epoch) if newest_epoch else 0
+    broker_now = datetime.fromtimestamp(now.timestamp() + clock_offset, timezone.utc)
+    cutoff_epoch = now.timestamp() - hours * 3600
+    broker_cutoff = datetime.fromtimestamp(cutoff_epoch + clock_offset, timezone.utc)
     for symbol in SYMBOLS:
         mt5.symbol_select(symbol, True)
         reference_ticks = mt5.copy_ticks_from(
-            symbol, datetime.fromtimestamp(cutoff_dt, timezone.utc), 1, mt5.COPY_TICKS_ALL
+            symbol, broker_cutoff, 1, mt5.COPY_TICKS_ALL
         )
         for tick in reference_ticks if reference_ticks is not None else ():
             reference_bid = float(tick["bid"])
@@ -151,9 +289,9 @@ def history_payload(terminal, hours: int, limit: int) -> dict:
     while True:
         per_symbol = {}
         all_epochs = set()
-        range_start = datetime.fromtimestamp(now.timestamp() - lookback_seconds, timezone.utc)
+        range_start = broker_now - timedelta(seconds=lookback_seconds)
         for symbol in SYMBOLS:
-            ticks = mt5.copy_ticks_range(symbol, range_start, now, mt5.COPY_TICKS_ALL)
+            ticks = mt5.copy_ticks_range(symbol, range_start, broker_now, mt5.COPY_TICKS_ALL)
             points: dict[float, float] = {}
             for tick in ticks if ticks is not None else ():
                 epoch = float(tick["time_msc"] or int(tick["time"]) * 1000) / 1000.0
@@ -170,8 +308,7 @@ def history_payload(terminal, hours: int, limit: int) -> dict:
             break
         lookback_seconds = min(hours * 3600, lookback_seconds * 4)
 
-    raw_epochs = sorted((epoch for epoch in all_epochs if epoch >= cutoff_dt), reverse=True)[:row_limit]
-    clock_offset = broker_clock_offset(float(raw_epochs[0])) if raw_epochs else 0
+    raw_epochs = sorted((epoch for epoch in all_epochs if epoch >= cutoff_epoch + clock_offset), reverse=True)[:row_limit]
     epochs = [epoch - clock_offset for epoch in raw_epochs]
     prices = dict(references)
     if raw_epochs:
@@ -205,15 +342,18 @@ def history_payload(terminal, hours: int, limit: int) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("status", "history"))
+    parser.add_argument("mode", choices=("status", "snapshot", "history"))
     parser.add_argument("--hours", type=int, default=24)
     parser.add_argument("--limit", type=int, default=1000)
     args = parser.parse_args()
     try:
         terminal, account = connect()
-        payload = status_payload(terminal, account) if args.mode == "status" else history_payload(
-            terminal, max(1, min(168, args.hours)), args.limit
-        )
+        if args.mode == "status":
+            payload = status_payload(terminal, account)
+        elif args.mode == "snapshot":
+            payload = snapshot_payload(terminal, max(1, min(168, args.hours)))
+        else:
+            payload = history_payload(terminal, max(1, min(168, args.hours)), args.limit)
         print(json.dumps(payload, separators=(",", ":")))
         return 0
     except Exception as error:

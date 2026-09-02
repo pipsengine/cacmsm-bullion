@@ -28,6 +28,14 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def broker_clock_offset(latest_epoch: float) -> int:
+    """Normalize terminals that encode chart epochs in broker-server time."""
+    difference = latest_epoch - utc_now().timestamp()
+    if 30 * 60 < abs(difference) < 14 * 60 * 60:
+        return int(round(difference / 3600.0) * 3600)
+    return 0
+
+
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 
@@ -170,7 +178,12 @@ def normalize_strength_percentages(values: dict[str, float]) -> dict[str, float]
     return result
 
 
-TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"]
+TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1", "YTD"]
+MT5_TIMEFRAME_NAMES = {
+    timeframe: f"TIMEFRAME_{timeframe}"
+    for timeframe in TIMEFRAMES
+    if timeframe not in {"TICK", "YTD"}
+}
 TF_SECONDS = {
     "TICK": 1,
     "M1": 60,
@@ -185,7 +198,18 @@ TF_SECONDS = {
     "D1": 24 * 3600,
     "W1": 7 * 24 * 3600,
     "MN1": 30 * 24 * 3600,
+    "YTD": 366 * 24 * 3600,
 }
+
+
+def higher_timeframe_filter(values: dict[str, float]) -> str:
+    """Require D1, W1 and MN1 to agree before declaring directional bias."""
+    anchors = [float(values.get(timeframe, 50.0)) for timeframe in ("D1", "W1", "MN1")]
+    if all(value >= 70.0 for value in anchors):
+        return "STRONG"
+    if all(value < 40.0 for value in anchors):
+        return "WEAK"
+    return "NEUTRAL"
 
 
 def _ema(prev: float | None, new: float, alpha: float) -> float:
@@ -358,10 +382,11 @@ class TickStore:
 
 
 class _MT5FeedWorker:
-    def __init__(self, *, r: Redis, settings: Settings, on_tick):
+    def __init__(self, *, r: Redis, settings: Settings, on_tick, on_timeframe_references):
         self._r = r
         self._s = settings
         self._on_tick = on_tick
+        self._on_timeframe_references = on_timeframe_references
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.mt5 = None
@@ -369,6 +394,8 @@ class _MT5FeedWorker:
         self.last_error = None
         self._last_tick_epoch: dict[str, float] = {}
         self._history_backfilled = False
+        self._clock_offset_seconds = 0
+        self._timeframe_references_refreshed_at = 0.0
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -421,10 +448,15 @@ class _MT5FeedWorker:
         for sym in self._s.symbols:
             if not self.mt5.symbol_select(sym, True):
                 log.warning("mt5 symbol_select failed", extra={"fields": {"symbol": sym, "err": self.mt5.last_error()}})
+        newest_epoch = 0.0
+        for sym in self._s.symbols:
+            tick = self.mt5.symbol_info_tick(sym)
+            if tick is not None:
+                newest_epoch = max(newest_epoch, float(tick.time_msc or tick.time * 1000) / 1000.0)
+        self._clock_offset_seconds = broker_clock_offset(newest_epoch) if newest_epoch else 0
         return True
 
-    @staticmethod
-    def _stored_tick(symbol: str, tick) -> tuple | None:
+    def _stored_tick(self, symbol: str, tick) -> tuple | None:
         bid = float(tick["bid"])
         ask = float(tick["ask"])
         last = float(tick["last"])
@@ -432,6 +464,7 @@ class _MT5FeedWorker:
         if mid <= 0.0:
             return None
         epoch = float(tick["time_msc"] or int(tick["time"]) * 1000) / 1000.0
+        epoch -= self._clock_offset_seconds
         stamp = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
         spread = float(tick["spread"]) if "spread" in tick.dtype.names else round(ask - bid, 8)
         return symbol, stamp, epoch, bid, ask, spread, mid, "MT5"
@@ -440,9 +473,11 @@ class _MT5FeedWorker:
         now = utc_now()
         total_window_seconds = self._s.history_hours * 3600
         cutoff = now - timedelta(seconds=total_window_seconds)
+        broker_cutoff = cutoff + timedelta(seconds=self._clock_offset_seconds)
+        broker_now = now + timedelta(seconds=self._clock_offset_seconds)
         selected: dict[tuple[str, float], tuple] = {}
         for symbol in self._s.symbols:
-            reference_ticks = self.mt5.copy_ticks_from(symbol, cutoff, 1, self.mt5.COPY_TICKS_ALL)
+            reference_ticks = self.mt5.copy_ticks_from(symbol, broker_cutoff, 1, self.mt5.COPY_TICKS_ALL)
             for tick in reference_ticks if reference_ticks is not None else ():
                 row = self._stored_tick(symbol, tick)
                 if row:
@@ -453,9 +488,9 @@ class _MT5FeedWorker:
         while True:
             recent: dict[tuple[str, float], tuple] = {}
             epochs: set[float] = set()
-            range_start = now - timedelta(seconds=lookback_seconds)
+            range_start = broker_now - timedelta(seconds=lookback_seconds)
             for symbol in self._s.symbols:
-                ticks = self.mt5.copy_ticks_range(symbol, range_start, now, self.mt5.COPY_TICKS_ALL)
+                ticks = self.mt5.copy_ticks_range(symbol, range_start, broker_now, self.mt5.COPY_TICKS_ALL)
                 for tick in ticks if ticks is not None else ():
                     row = self._stored_tick(symbol, tick)
                     if row:
@@ -482,6 +517,52 @@ class _MT5FeedWorker:
             self._last_tick_epoch.update({symbol: row[2] for symbol, row in latest_rows.items()})
         self._history_backfilled = True
 
+    def _refresh_timeframe_references(self) -> None:
+        references: dict[str, dict[str, float]] = {
+            timeframe: {} for timeframe in TIMEFRAMES if timeframe != "TICK"
+        }
+        year_start = datetime(utc_now().year, 1, 1, tzinfo=timezone.utc) + timedelta(
+            seconds=self._clock_offset_seconds
+        )
+        year_search_end = year_start + timedelta(days=7)
+        def period_open(rates, period_seconds: int) -> float | None:
+            if rates is None or len(rates) == 0:
+                return None
+            period_start = int(rates[-1]["time"]) // period_seconds * period_seconds
+            candidates = [rate for rate in rates if int(rate["time"]) >= period_start]
+            rate = candidates[0] if candidates else rates[-1]
+            opening_price = float(rate["open"])
+            return opening_price if opening_price > 0.0 else None
+
+        for symbol in self._s.symbols:
+            minute_rates = self.mt5.copy_rates_from_pos(symbol, self.mt5.TIMEFRAME_M1, 0, 31)
+            for timeframe, seconds in {"M1": 60, "M5": 300, "M15": 900, "M30": 1800}.items():
+                opening_price = period_open(minute_rates, seconds)
+                if opening_price:
+                    references[timeframe][symbol] = opening_price
+            hour_rates = self.mt5.copy_rates_from_pos(symbol, self.mt5.TIMEFRAME_H1, 0, 13)
+            for timeframe, seconds in {"H1": 3600, "H4": 14400, "H6": 21600, "H8": 28800, "H12": 43200}.items():
+                opening_price = period_open(hour_rates, seconds)
+                if opening_price:
+                    references[timeframe][symbol] = opening_price
+            for timeframe, constant_name in {"D1": "TIMEFRAME_D1", "W1": "TIMEFRAME_W1", "MN1": "TIMEFRAME_MN1"}.items():
+                rates = self.mt5.copy_rates_from_pos(symbol, getattr(self.mt5, constant_name), 0, 1)
+                for rate in rates if rates is not None else ():
+                    opening_price = float(rate["open"])
+                    if opening_price > 0.0:
+                        references[timeframe][symbol] = opening_price
+                    break
+            year_rates = self.mt5.copy_rates_range(
+                symbol, self.mt5.TIMEFRAME_D1, year_start, year_search_end
+            )
+            for rate in year_rates if year_rates is not None else ():
+                opening_price = float(rate["open"])
+                if opening_price > 0.0:
+                    references["YTD"][symbol] = opening_price
+                break
+        self._on_timeframe_references(references)
+        self._timeframe_references_refreshed_at = time.monotonic()
+
     def _run(self):
         reconnect_attempt = 0
         while not self._stop.is_set():
@@ -502,11 +583,18 @@ class _MT5FeedWorker:
                         except Exception as exc:
                             self.last_error = f"history backfill failed: {exc}"
                             log.warning("MT5 history backfill failed", extra={"fields": {"exc": str(exc)}})
+                    try:
+                        self._refresh_timeframe_references()
+                    except Exception as exc:
+                        self.last_error = f"timeframe reference refresh failed: {exc}"
+                        log.warning("MT5 timeframe refresh failed", extra={"fields": {"exc": str(exc)}})
                 else:
                     reconnect_attempt += 1
                     time.sleep(min(30, 1 + reconnect_attempt * 2))
                     continue
             try:
+                if time.monotonic() - self._timeframe_references_refreshed_at >= 30.0:
+                    self._refresh_timeframe_references()
                 now = utc_now()
                 rows = []
                 payloads = []
@@ -522,11 +610,12 @@ class _MT5FeedWorker:
                         ts_s = float(tick.time_msc) / 1000.0
                     else:
                         ts_s = float(tick.time)
-                    if ts_s <= self._last_tick_epoch.get(sym, 0.0):
+                    normalized_ts_s = ts_s - self._clock_offset_seconds
+                    if normalized_ts_s <= self._last_tick_epoch.get(sym, 0.0):
                         continue
-                    self._last_tick_epoch[sym] = ts_s
-                    ts_utc = datetime.fromtimestamp(ts_s, tz=timezone.utc).isoformat()
-                    ts_epoch = ts_s
+                    self._last_tick_epoch[sym] = normalized_ts_s
+                    ts_utc = datetime.fromtimestamp(normalized_ts_s, tz=timezone.utc).isoformat()
+                    ts_epoch = normalized_ts_s
                     payload = {
                         "ts": ts_utc,
                         "symbol": sym,
@@ -584,6 +673,7 @@ class MarketFeed:
             total_ticks=0,
         )
         self.reference_prices: dict[str, float] = {}
+        self.timeframe_reference_prices: dict[str, dict[str, float]] = {}
         self.reference_refreshed_at = 0.0
         self._seed_from_store()
 
@@ -639,6 +729,10 @@ class MarketFeed:
     def unregister_ws(self, wid: int) -> None:
         with self.lock:
             self.ws.pop(wid, None)
+
+    def update_timeframe_references(self, references: dict[str, dict[str, float]]) -> None:
+        with self.lock:
+            self.timeframe_reference_prices = references
 
     def on_tick(self, payloads: list[dict], rows: list[tuple]):
         payloads = [payload for payload in payloads if str(payload.get("source", "")).upper() == "MT5"]
@@ -721,9 +815,19 @@ class MarketFeed:
 
     def build_snapshot(self) -> dict:
         with self.lock:
-            matrix = compute_timeframe_matrix(self.state.per_ccy)
+            latest_prices = {symbol: {"mid": tick["mid"]} for symbol, tick in self.state.latest.items()}
+            matrix = {currency: {} for currency in CCY_ROWS}
+            for timeframe in TIMEFRAMES:
+                references = (
+                    self.reference_prices
+                    if timeframe == "TICK"
+                    else self.timeframe_reference_prices.get(timeframe, {})
+                )
+                percentages = normalize_strength_percentages(compute_currency_values(latest_prices, references))
+                for currency in CCY_ROWS:
+                    matrix[currency][timeframe] = percentages[currency]
             ranked = sorted(
-                [{"currency": c, "avg_bias": round(sum(matrix[c].values()) / max(1, len(matrix[c])), 4)} for c in CCY_ROWS],
+                [{"currency": c, "avg_bias": round(sum(matrix[c].values()) / max(1, len(matrix[c])), 1)} for c in CCY_ROWS],
                 key=lambda x: x["avg_bias"],
                 reverse=True,
             )
@@ -741,10 +845,13 @@ class MarketFeed:
                     {
                         "currency": c,
                         "values": {tf: matrix[c].get(tf, 0.0) for tf in TIMEFRAMES},
+                        "htf_filter": higher_timeframe_filter(matrix[c]),
                     }
                     for c in CCY_ROWS
                 ],
                 "ranked_bias": ranked,
+                "value_unit": "percent",
+                "sampling": "live_mt5",
             }
 
     def build_status(self) -> dict:
@@ -838,13 +945,21 @@ def create_app(*, redis_client: Any | None = None) -> FastAPI:
     def on_tick(payloads: list[dict], rows: list[tuple]):
         feed.on_tick(payloads, rows)
 
+    def on_timeframe_references(references: dict[str, dict[str, float]]):
+        feed.update_timeframe_references(references)
+
     @app.on_event("startup")
     def _startup():
         if app.state.redis is None:
             app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
         if settings.feed_mode.upper() != "MT5":
             log.warning("FEED_MODE=%s ignored: market data is MT5-only", settings.feed_mode)
-        w = _MT5FeedWorker(r=app.state.redis, settings=settings, on_tick=on_tick)
+        w = _MT5FeedWorker(
+            r=app.state.redis,
+            settings=settings,
+            on_tick=on_tick,
+            on_timeframe_references=on_timeframe_references,
+        )
         w.start()
         app.state.worker = w
         feed.state.feed_source = "MT5"

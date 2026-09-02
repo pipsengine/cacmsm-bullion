@@ -69,6 +69,43 @@ def test_cad_strength_increases_when_cad_outperforms_chf():
     assert scores["CAD"] > scores["CHF"]
 
 
+def test_live_matrix_uses_percentage_strength_for_every_timeframe(tmp_path: Path):
+    market = load_market_module()
+    store = market.TickStore(str(tmp_path / "matrix-ticks.sqlite3"), hours=24)
+    feed = market.MarketFeed(
+        settings=SimpleNamespace(symbols=market.DEFAULT_SYMBOLS, feed_mode="MT5", history_hours=24),
+        store=store,
+    )
+    references = {symbol: 1.0 for symbol in market.DEFAULT_SYMBOLS}
+    latest = {symbol: {"symbol": symbol, "mid": 1.0, "source": "MT5"} for symbol in market.DEFAULT_SYMBOLS}
+    latest["CADCHF"]["mid"] = 1.01
+    feed.state.latest = latest
+    feed.state.mt5_connected = True
+    feed.reference_prices = references
+    feed.timeframe_reference_prices = {
+        timeframe: references for timeframe in market.TIMEFRAMES if timeframe != "TICK"
+    }
+
+    snapshot = feed.build_snapshot()
+
+    assert snapshot["value_unit"] == "percent"
+    by_currency = {row["currency"]: row["values"] for row in snapshot["matrix_rows"]}
+    for timeframe in market.TIMEFRAMES:
+        values = [by_currency[currency][timeframe] for currency in market.CCY_ROWS]
+        assert all(0.0 <= value <= 100.0 for value in values)
+        assert values.count(0.0) <= 1
+        assert values.count(100.0) <= 1
+        assert by_currency["CAD"][timeframe] > by_currency["CHF"][timeframe]
+
+
+def test_higher_timeframe_filter_requires_daily_weekly_monthly_confluence():
+    market = load_market_module()
+
+    assert market.higher_timeframe_filter({"D1": 70, "W1": 82, "MN1": 91}) == "STRONG"
+    assert market.higher_timeframe_filter({"D1": 39.9, "W1": 12, "MN1": 0}) == "WEAK"
+    assert market.higher_timeframe_filter({"D1": 88, "W1": 65, "MN1": 92}) == "NEUTRAL"
+
+
 def test_tick_history_is_newest_first_percent_data(tmp_path: Path):
     market = load_market_module()
     store = market.TickStore(str(tmp_path / "ticks.sqlite3"), hours=24)

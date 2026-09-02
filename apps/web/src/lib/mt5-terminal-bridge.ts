@@ -44,7 +44,7 @@ export async function readMt5Terminal(): Promise<Mt5TerminalSnapshot> {
   }
 }
 
-export async function readMt5MarketData(mode: "status" | "history", hours = 24, limit = 1000): Promise<Record<string, unknown>> {
+export async function readMt5MarketData(mode: "status" | "snapshot" | "history", hours = 24, limit = 1000): Promise<Record<string, unknown>> {
   const cacheKey = `${mode}:${hours}:${limit}`;
   const holder = globalThis as typeof globalThis & {
     __cacsmsMt5MarketCache?: Map<string, { expires: number; value?: Record<string, unknown>; pending?: Promise<Record<string, unknown>> }>;
@@ -66,13 +66,14 @@ export async function readMt5MarketData(mode: "status" | "history", hours = 24, 
   }
 }
 
-async function readMt5MarketDataUncached(mode: "status" | "history", hours: number, limit: number): Promise<Record<string, unknown>> {
+async function readMt5MarketDataUncached(mode: "status" | "snapshot" | "history", hours: number, limit: number): Promise<Record<string, unknown>> {
   const python = process.env.MT5_PYTHON?.trim() || "python";
   const script = process.env.MT5_MARKET_SCRIPT?.trim()
     || path.resolve(process.cwd(), "../../scripts/mt5_market_data.py");
   try {
     const args = [script, mode];
     if (mode === "history") args.push("--hours", String(hours), "--limit", String(limit));
+    if (mode === "snapshot") args.push("--hours", String(hours));
     const { stdout } = await execFileAsync(python, args, {
       windowsHide: true, timeout: 20_000, maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, PYTHONIOENCODING: "utf-8" }
