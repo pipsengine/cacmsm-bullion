@@ -70,8 +70,7 @@ def _start_backend_service(svc_name: str) -> subprocess.Popen:
         mod = "app.api:app"
     env = BASE_ENV.copy()
     if svc_name == "market-data-service":
-        env["FEED_MODE"] = "SIMULATOR"
-        env["TICK_MS"] = "250"
+        env["FEED_MODE"] = "MT5"
     if svc_name == "execution-service":
         env["ROUTE_MODE"] = "SIMULATOR"
     print(f"[launch] starting {svc_name} on :{port}", flush=True)
@@ -93,7 +92,7 @@ def _start_backend_service(svc_name: str) -> subprocess.Popen:
 
 def main() -> None:
     print("=" * 60, flush=True)
-    print("Cacsms-Bullion Local Launcher (SIMULATOR mode)", flush=True)
+    print("Cacsms-Bullion Local Launcher (MT5 market data)", flush=True)
     print("=" * 60, flush=True)
 
     processes: list[subprocess.Popen] = []

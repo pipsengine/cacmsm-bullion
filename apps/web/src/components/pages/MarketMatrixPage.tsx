@@ -227,7 +227,6 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
     if (!snapshot) return { label: "LOADING", kind: "warn" as const };
     if (snapshot.mt5_connected) return { label: "MT5 LIVE", kind: "ok" as const };
     if (snapshot.feed_source === "MT5" && !snapshot.mt5_connected) return { label: "MT5 RECONNECTING", kind: "warn" as const };
-    if (snapshot.feed_source === "SIM") return { label: "SIM FALLBACK", kind: "warn" as const };
     return { label: "OFFLINE", kind: "err" as const };
   })();
 
@@ -283,9 +282,9 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
         </div>
       </div>
 
-      {snapshot?.feed_source === "SIM" && (
-        <div className="mxBanner">
-          MT5 is not connected. Running on internal SIMULATOR fallback. Pages will auto-resume when MT5 bridge reconnects.
+      {snapshot && !snapshot.mt5_connected && (
+        <div className="mxBanner mxBannerErr">
+          MT5 is disconnected. No substitute or simulated market data will be generated.
           {snapshot.mt5_error ? ` — ${snapshot.mt5_error}` : ""}
         </div>
       )}

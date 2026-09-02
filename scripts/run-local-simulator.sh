@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Local (non-docker) runner for SIMULATOR mode.
+# Local (non-docker) runner with MT5-only market data.
 # Requirements:
 # - python3
 # - redis-server running locally on 6379
 #
 # This starts each service on localhost:
 # control-api:        :8000
-# market-data:        :8001 (simulated feed)
+# market-data:        :8001 (live MT5 feed)
 # decision-service:   :8002
 # execution-service:  :8003 (simulated fills by default)
 # monitoring-service: :8004
@@ -34,8 +34,7 @@ run_py() {
 run_py "control-api" "uvicorn app.main:app --host 0.0.0.0 --port 8000" &
 sleep 0.3
 
-export FEED_MODE="SIMULATOR"
-export TICK_MS="${TICK_MS:-250}"
+export FEED_MODE="MT5"
 run_py "market-data-service" "uvicorn app.main:app --host 0.0.0.0 --port 8001" &
 sleep 0.3
 

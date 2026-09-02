@@ -40,53 +40,41 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_SYMBOLS = [
-    "EURUSD",
-    "GBPUSD",
-    "USDJPY",
+    "AUDCAD",
+    "AUDCHF",
+    "AUDJPY",
+    "AUDNZD",
     "AUDUSD",
+    "CADCHF",
+    "CADJPY",
+    "CHFJPY",
+    "EURAUD",
+    "EURCAD",
+    "EURCHF",
+    "EURGBP",
+    "EURJPY",
+    "EURNZD",
+    "EURUSD",
+    "GBPAUD",
+    "GBPCAD",
+    "GBPCHF",
+    "GBPJPY",
+    "GBPNZD",
+    "GBPUSD",
+    "NZDCAD",
+    "NZDCHF",
+    "NZDJPY",
     "NZDUSD",
     "USDCAD",
     "USDCHF",
+    "USDJPY",
     "XAUUSD",
 ]
-
-SYMBOL_BASE_PRICES = {
-    "EURUSD": 1.0845,
-    "GBPUSD": 1.2716,
-    "USDJPY": 147.22,
-    "AUDUSD": 0.6648,
-    "NZDUSD": 0.5988,
-    "USDCAD": 1.3562,
-    "USDCHF": 0.8913,
-    "XAUUSD": 2526.40,
-}
-
-BASE_VOLATILITY = {
-    "EURUSD": 0.00040,
-    "GBPUSD": 0.00050,
-    "USDJPY": 0.05,
-    "AUDUSD": 0.00045,
-    "NZDUSD": 0.00055,
-    "USDCAD": 0.00045,
-    "USDCHF": 0.00035,
-    "XAUUSD": 0.30,
-}
-
-BASE_SPREAD = {
-    "EURUSD": 0.00012,
-    "GBPUSD": 0.00015,
-    "USDJPY": 0.012,
-    "AUDUSD": 0.00014,
-    "NZDUSD": 0.00018,
-    "USDCAD": 0.00015,
-    "USDCHF": 0.00012,
-    "XAUUSD": 0.20,
-}
 
 
 class Settings(BaseServiceSettings):
     symbols: list[str] = DEFAULT_SYMBOLS
-    feed_mode: str = "SIMULATOR"
+    feed_mode: str = "MT5"
     tick_ms: int = 250
 
     stream_market: str = "stream:market"
@@ -114,43 +102,72 @@ def lagos_str(dt: datetime) -> str:
 
 
 CCY_ROWS = ["AUD", "CAD", "EUR", "NZD", "GBP", "USD", "CHF", "JPY", "XAU"]
+FX_CURRENCIES = set(CCY_ROWS) - {"XAU"}
+FX_PAIRS = {
+    symbol: (symbol[:3], symbol[3:])
+    for symbol in DEFAULT_SYMBOLS
+    if len(symbol) == 6 and symbol[:3] in FX_CURRENCIES and symbol[3:] in FX_CURRENCIES
+}
+MAX_HISTORY_TICK_ROWS = 5000
 
 
-def _inv(x):
-    return None if x is None or x == 0 else 1.0 / x
+def compute_currency_values(
+    symbols_latest: dict[str, dict], reference_prices: dict[str, float] | None = None
+) -> dict[str, float]:
+    """Average MT5 pair returns into base/quote currency momentum scores."""
+    references = reference_prices or {}
+    totals = {currency: 0.0 for currency in CCY_ROWS}
+    counts = {currency: 0 for currency in CCY_ROWS}
+    for symbol, (base_currency, quote_currency) in FX_PAIRS.items():
+        latest = symbols_latest.get(symbol)
+        current = float(latest.get("mid", 0.0)) if latest else 0.0
+        reference = float(references.get(symbol, 0.0))
+        if current <= 0.0 or reference <= 0.0:
+            continue
+        pair_return = math.log(current / reference) * 100.0
+        totals[base_currency] += pair_return
+        totals[quote_currency] -= pair_return
+        counts[base_currency] += 1
+        counts[quote_currency] += 1
+
+    xau_latest = symbols_latest.get("XAUUSD")
+    xau_current = float(xau_latest.get("mid", 0.0)) if xau_latest else 0.0
+    xau_reference = float(references.get("XAUUSD", 0.0))
+    if xau_current > 0.0 and xau_reference > 0.0:
+        totals["XAU"] = math.log(xau_current / xau_reference) * 100.0
+        counts["XAU"] = 1
+
+    return {
+        currency: round(totals[currency] / counts[currency], 6) if counts[currency] else 0.0
+        for currency in CCY_ROWS
+    }
 
 
-def compute_currency_values(symbols_latest: dict[str, dict]) -> dict[str, float]:
-    def norm_from_quo(sym, inv=False):
-        s = symbols_latest.get(sym)
-        if not s:
-            return 0.0
-        base = SYMBOL_BASE_PRICES.get(sym, 1.0)
-        v = float(s.get("mid"))
-        if inv:
-            if v <= 0:
-                return 0.0
-            v = 1.0 / v
-            base = 1.0 / base
-        if base == 0:
-            return 0.0
-        return math.tanh(((v / base) - 1.0) * 10.0)
+def normalize_strength_percentages(values: dict[str, float]) -> dict[str, float]:
+    """Map one cross-market snapshot to 0..100 without duplicating either extreme."""
+    numeric = {currency: float(values.get(currency, 0.0)) for currency in CCY_ROWS}
+    low = min(numeric.values())
+    high = max(numeric.values())
+    if math.isclose(low, high, rel_tol=0.0, abs_tol=1e-12):
+        return {currency: 50.0 for currency in CCY_ROWS}
 
-    aud = norm_from_quo("AUDUSD")
-    cad = norm_from_quo("USDCAD", inv=True)
-    eur = norm_from_quo("EURUSD")
-    nzd = norm_from_quo("NZDUSD")
-    gbp = norm_from_quo("GBPUSD")
-    chf = norm_from_quo("USDCHF", inv=True)
-    jpy = norm_from_quo("USDJPY", inv=True)
-    xau = norm_from_quo("XAUUSD")
-    usd_neg = eur + gbp + aud + nzd
-    usd_pos = cad + chf + jpy
-    usd = (usd_pos - usd_neg) / 7.0
-
-    out = {"AUD": aud, "CAD": cad, "EUR": eur, "NZD": nzd, "GBP": gbp, "USD": usd, "CHF": chf, "JPY": jpy, "XAU": xau}
-    scale = 0.25
-    return {k: round(v * scale, 4) for k, v in out.items()}
+    low_count = sum(math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
+    high_count = sum(math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
+    spread = high - low
+    result = {}
+    for currency, value in numeric.items():
+        percentage = (value - low) / spread * 100.0
+        if low_count > 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12):
+            percentage = 0.1
+        elif high_count > 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12):
+            percentage = 99.9
+        percentage = round(percentage, 1)
+        if percentage <= 0.0 and not (low_count == 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12)):
+            percentage = 0.1
+        elif percentage >= 100.0 and not (high_count == 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12)):
+            percentage = 99.9
+        result[currency] = percentage
+    return result
 
 
 TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1"]
@@ -234,25 +251,33 @@ class TickStore:
                     ask REAL NOT NULL,
                     spread REAL NOT NULL,
                     mid REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'LEGACY',
                     PRIMARY KEY (symbol, ts_epoch)
                 );"""
             )
+            columns = {str(row[1]) for row in c.execute("PRAGMA table_info(ticks);")}
+            if "source" not in columns:
+                c.execute("ALTER TABLE ticks ADD COLUMN source TEXT NOT NULL DEFAULT 'LEGACY';")
+            self.purged_non_mt5 = int(c.execute("SELECT COUNT(*) FROM ticks WHERE source != 'MT5';").fetchone()[0])
+            c.execute("DELETE FROM ticks WHERE source != 'MT5';")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ticks_epoch ON ticks(ts_epoch);")
             c.execute("CREATE INDEX IF NOT EXISTS idx_ticks_symbol_epoch ON ticks(symbol, ts_epoch);")
 
-    def insert_many(self, rows: Iterable[tuple[str, str, float, float, float, float, float]]):
-        if not rows:
+    def insert_many(self, rows: Iterable[tuple[str, str, float, float, float, float, float, str]]):
+        mt5_rows = [row for row in rows if len(row) >= 8 and str(row[7]).upper() == "MT5"]
+        if not mt5_rows:
             return
         cutoff = (utc_now() - timedelta(hours=self.hours)).timestamp()
         with self._lock, closing(self._conn()) as c:
             c.executemany(
-                "INSERT OR REPLACE INTO ticks(symbol, ts_utc, ts_epoch, bid, ask, spread, mid) VALUES(?,?,?,?,?,?,?);",
-                list(rows),
+                """INSERT OR REPLACE INTO ticks(symbol, ts_utc, ts_epoch, bid, ask, spread, mid, source)
+                   VALUES(?,?,?,?,?,?,?,?);""",
+                mt5_rows,
             )
-            c.execute("DELETE FROM ticks WHERE ts_epoch < ?;", (cutoff,))
+            c.execute("DELETE FROM ticks WHERE ts_epoch < ? OR source != 'MT5';", (cutoff,))
 
     def symbols_since(self, *, since_s: float, symbols: list[str] | None = None):
-        q = "SELECT symbol, ts_utc, ts_epoch, bid, ask, spread, mid FROM ticks WHERE ts_epoch >= ?"
+        q = "SELECT symbol, ts_utc, ts_epoch, bid, ask, spread, mid FROM ticks WHERE ts_epoch >= ? AND source = 'MT5'"
         params: list[Any] = [since_s]
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
@@ -262,17 +287,60 @@ class TickStore:
         with closing(self._conn()) as c:
             return list(c.execute(q, tuple(params)))
 
+    def recent_tick_rows(self, *, since_s: float, symbols: list[str], limit: int):
+        placeholders = ",".join("?" for _ in symbols)
+        epoch_sql = f"""SELECT DISTINCT ts_epoch FROM ticks
+                        WHERE ts_epoch >= ? AND source = 'MT5' AND symbol IN ({placeholders})
+                        ORDER BY ts_epoch DESC LIMIT ?"""
+        epoch_params: list[Any] = [since_s, *symbols, limit]
+        with closing(self._conn()) as c:
+            epochs = [float(row[0]) for row in c.execute(epoch_sql, tuple(epoch_params))]
+            if not epochs:
+                return {}, []
+            first_epoch = min(epochs)
+            baseline = {}
+            for symbol in symbols:
+                row = c.execute(
+                    """SELECT mid FROM ticks WHERE symbol = ? AND ts_epoch < ?
+                       AND source = 'MT5' ORDER BY ts_epoch DESC LIMIT 1""",
+                    (symbol, first_epoch),
+                ).fetchone()
+                if row:
+                    baseline[symbol] = float(row[0])
+            rows = list(c.execute(
+                f"""SELECT symbol, ts_utc, ts_epoch, bid, ask, spread, mid FROM ticks
+                    WHERE ts_epoch >= ? AND source = 'MT5' AND symbol IN ({placeholders})
+                    ORDER BY ts_epoch ASC""",
+                (first_epoch, *symbols),
+            ))
+            return baseline, rows
+
+    def reference_prices_since(self, *, since_s: float, symbols: list[str]) -> dict[str, float]:
+        placeholders = ",".join("?" for _ in symbols)
+        sql = f"""SELECT t.symbol, t.mid FROM ticks t
+                  JOIN (
+                    SELECT symbol, MIN(ts_epoch) AS first_epoch FROM ticks
+                    WHERE ts_epoch >= ? AND source = 'MT5' AND symbol IN ({placeholders})
+                    GROUP BY symbol
+                  ) first
+                  ON t.symbol = first.symbol AND t.ts_epoch = first.first_epoch
+                  WHERE t.source = 'MT5'"""
+        with closing(self._conn()) as c:
+            return {str(symbol): float(mid) for symbol, mid in c.execute(sql, (since_s, *symbols))}
+
     def latest_per_symbol(self, symbols: list[str] | None = None) -> dict[str, dict]:
         result = {}
         sql = """SELECT t1.symbol, t1.ts_utc, t1.ts_epoch, t1.bid, t1.ask, t1.spread, t1.mid
                  FROM ticks t1
-                 JOIN (SELECT symbol, MAX(ts_epoch) me FROM ticks GROUP BY symbol) t2
+                 JOIN (SELECT symbol, MAX(ts_epoch) me FROM ticks WHERE source = 'MT5' GROUP BY symbol) t2
                    ON t1.symbol=t2.symbol AND t1.ts_epoch=t2.me"""
         params: tuple[Any, ...] = ()
         if symbols:
             placeholders = ",".join("?" for _ in symbols)
-            sql += f" WHERE t1.symbol IN ({placeholders})"
+            sql += f" WHERE t1.source = 'MT5' AND t1.symbol IN ({placeholders})"
             params = tuple(symbols)
+        else:
+            sql += " WHERE t1.source = 'MT5'"
         with closing(self._conn()) as c:
             for row in c.execute(sql, params):
                 sym, ts_utc, epoch, bid, ask, spread, mid = row
@@ -289,78 +357,6 @@ class TickStore:
         return result
 
 
-class _SimulatorWorker:
-    def __init__(self, *, r: Redis, settings: Settings, on_tick):
-        self._r = r
-        self._s = settings
-        self._on_tick = on_tick
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._mid = {sym: float(SYMBOL_BASE_PRICES[sym]) for sym in settings.symbols}
-        self._spread = {sym: float(BASE_SPREAD[sym]) for sym in settings.symbols}
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def _run(self) -> None:
-        import random
-
-        symbols = list(self._s.symbols)
-        while not self._stop.is_set():
-            running = self._r.get(self._s.control_key) == "1"
-            kill = self._r.get(self._s.kill_key) == "1"
-            if not running or kill:
-                time.sleep(0.25)
-                continue
-            rows = []
-            payloads = []
-            now = utc_now()
-            for sym in symbols:
-                sym_base = float(SYMBOL_BASE_PRICES[sym])
-                vol = BASE_VOLATILITY[sym]
-                step = random.gauss(0, vol)
-                new_mid = max(0.00001, self._mid[sym] + step)
-                spread = max(BASE_SPREAD[sym] * 0.8, self._spread[sym] * 0.95 + random.expovariate(1 / (BASE_SPREAD[sym] * 3.0)))
-                bid = round(new_mid - spread / 2, self._digits_for(sym))
-                ask = round(new_mid + spread / 2, self._digits_for(sym))
-                mid = round((bid + ask) / 2, self._digits_for(sym))
-                spread_r = round(ask - bid, self._digits_for(sym))
-                ts_utc = now.isoformat()
-                ts_epoch = now.timestamp()
-                payload = {
-                    "ts": ts_utc,
-                    "symbol": sym,
-                    "bid": bid,
-                    "ask": ask,
-                    "spread": spread_r,
-                    "mid": mid,
-                    "source": "SIM",
-                }
-                xadd_json(self._r, self._s.stream_market, payload)
-                payloads.append(payload)
-                rows.append((sym, ts_utc, ts_epoch, bid, ask, spread_r, mid))
-                self._mid[sym] = mid
-                self._spread[sym] = spread
-            self._r.set(self._s.key_last_tick_ts, now.isoformat())
-            self._on_tick(payloads, rows)
-            time.sleep(max(10, self._s.tick_ms) / 1000.0)
-
-    @staticmethod
-    def _digits_for(sym: str) -> int:
-        if sym == "XAUUSD":
-            return 2
-        if sym in ("USDJPY",):
-            return 3
-        return 5
-
-
 class _MT5FeedWorker:
     def __init__(self, *, r: Redis, settings: Settings, on_tick):
         self._r = r
@@ -371,6 +367,8 @@ class _MT5FeedWorker:
         self.mt5 = None
         self.connected = False
         self.last_error = None
+        self._last_tick_epoch: dict[str, float] = {}
+        self._history_backfilled = False
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -425,6 +423,65 @@ class _MT5FeedWorker:
                 log.warning("mt5 symbol_select failed", extra={"fields": {"symbol": sym, "err": self.mt5.last_error()}})
         return True
 
+    @staticmethod
+    def _stored_tick(symbol: str, tick) -> tuple | None:
+        bid = float(tick["bid"])
+        ask = float(tick["ask"])
+        last = float(tick["last"])
+        mid = round((bid + ask) / 2.0, 8) if bid > 0.0 and ask > 0.0 else last
+        if mid <= 0.0:
+            return None
+        epoch = float(tick["time_msc"] or int(tick["time"]) * 1000) / 1000.0
+        stamp = datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+        spread = float(tick["spread"]) if "spread" in tick.dtype.names else round(ask - bid, 8)
+        return symbol, stamp, epoch, bid, ask, spread, mid, "MT5"
+
+    def _backfill_history(self) -> None:
+        now = utc_now()
+        total_window_seconds = self._s.history_hours * 3600
+        cutoff = now - timedelta(seconds=total_window_seconds)
+        selected: dict[tuple[str, float], tuple] = {}
+        for symbol in self._s.symbols:
+            reference_ticks = self.mt5.copy_ticks_from(symbol, cutoff, 1, self.mt5.COPY_TICKS_ALL)
+            for tick in reference_ticks if reference_ticks is not None else ():
+                row = self._stored_tick(symbol, tick)
+                if row:
+                    selected[(symbol, row[2])] = row
+                break
+
+        lookback_seconds = min(total_window_seconds, 60)
+        while True:
+            recent: dict[tuple[str, float], tuple] = {}
+            epochs: set[float] = set()
+            range_start = now - timedelta(seconds=lookback_seconds)
+            for symbol in self._s.symbols:
+                ticks = self.mt5.copy_ticks_range(symbol, range_start, now, self.mt5.COPY_TICKS_ALL)
+                for tick in ticks if ticks is not None else ():
+                    row = self._stored_tick(symbol, tick)
+                    if row:
+                        recent[(symbol, row[2])] = row
+                        epochs.add(row[2])
+            if len(epochs) >= 1000 or lookback_seconds >= total_window_seconds:
+                selected.update(recent)
+                break
+            lookback_seconds = min(total_window_seconds, lookback_seconds * 4)
+
+        rows = sorted(selected.values(), key=lambda row: row[2])
+        latest_rows: dict[str, tuple] = {}
+        for row in rows:
+            latest_rows[row[0]] = row
+        payloads = [
+            {
+                "ts": row[1], "symbol": row[0], "bid": row[3], "ask": row[4],
+                "spread": row[5], "mid": row[6], "source": "MT5",
+            }
+            for row in latest_rows.values()
+        ]
+        if payloads:
+            self._on_tick(payloads, rows)
+            self._last_tick_epoch.update({symbol: row[2] for symbol, row in latest_rows.items()})
+        self._history_backfilled = True
+
     def _run(self):
         reconnect_attempt = 0
         while not self._stop.is_set():
@@ -438,6 +495,13 @@ class _MT5FeedWorker:
                     self.connected = True
                     reconnect_attempt = 0
                     log.info("mt5 connected")
+                    if not self._history_backfilled:
+                        try:
+                            self._backfill_history()
+                            log.info("MT5 tick history backfill completed")
+                        except Exception as exc:
+                            self.last_error = f"history backfill failed: {exc}"
+                            log.warning("MT5 history backfill failed", extra={"fields": {"exc": str(exc)}})
                 else:
                     reconnect_attempt += 1
                     time.sleep(min(30, 1 + reconnect_attempt * 2))
@@ -458,6 +522,9 @@ class _MT5FeedWorker:
                         ts_s = float(tick.time_msc) / 1000.0
                     else:
                         ts_s = float(tick.time)
+                    if ts_s <= self._last_tick_epoch.get(sym, 0.0):
+                        continue
+                    self._last_tick_epoch[sym] = ts_s
                     ts_utc = datetime.fromtimestamp(ts_s, tz=timezone.utc).isoformat()
                     ts_epoch = ts_s
                     payload = {
@@ -471,7 +538,7 @@ class _MT5FeedWorker:
                     }
                     xadd_json(self._r, self._s.stream_market, payload)
                     payloads.append(payload)
-                    rows.append((sym, ts_utc, ts_epoch, bid, ask, spread, mid))
+                    rows.append((sym, ts_utc, ts_epoch, bid, ask, spread, mid, "MT5"))
                 if payloads:
                     self._r.set(self._s.key_last_tick_ts, now.isoformat())
                     self._on_tick(payloads, rows)
@@ -512,16 +579,21 @@ class MarketFeed:
             per_ccy={c: [] for c in CCY_ROWS},
             last_update_epoch=0.0,
             mt5_connected=False,
-            feed_source="SIM" if settings.feed_mode.upper() == "SIMULATOR" else "MT5",
+            feed_source="MT5",
             mt5_error=None,
             total_ticks=0,
         )
+        self.reference_prices: dict[str, float] = {}
+        self.reference_refreshed_at = 0.0
         self._seed_from_store()
 
     def _seed_from_store(self):
         since = (utc_now() - timedelta(days=31)).timestamp()
+        since = (utc_now() - timedelta(hours=self.s.history_hours)).timestamp()
         rows = self.store.symbols_since(since_s=since, symbols=self.s.symbols)
         latest = self.store.latest_per_symbol(self.s.symbols)
+        self.reference_prices = self.store.reference_prices_since(since_s=since, symbols=self.s.symbols)
+        self.reference_refreshed_at = utc_now().timestamp()
         per_ccy: dict[str, list[tuple[float, float]]] = {c: [] for c in CCY_ROWS}
         per_sym_grouped: dict[str, list[tuple[float, float]]] = {}
         for (sym, _ts_utc, epoch, _b, _a, _spr, mid) in rows:
@@ -531,7 +603,7 @@ class MarketFeed:
         all_epochs = sorted({e for vals in per_sym_grouped.values() for e, _ in vals})
         sym_mid = {sym: per_sym_grouped.get(sym, []) for sym in self.s.symbols}
         idxs = {sym: 0 for sym in self.s.symbols}
-        current_mid = {sym: float(SYMBOL_BASE_PRICES[sym]) for sym in self.s.symbols}
+        current_mid = dict(self.reference_prices)
         for ep in all_epochs:
             for sym in self.s.symbols:
                 while idxs[sym] < len(sym_mid[sym]):
@@ -541,14 +613,18 @@ class MarketFeed:
                         idxs[sym] += 1
                     else:
                         break
-            ccy_vals = compute_currency_values({sym: {"mid": current_mid[sym]} for sym in current_mid})
+            ccy_vals = compute_currency_values(
+                {sym: {"mid": current_mid[sym]} for sym in current_mid}, self.reference_prices
+            )
             for c in CCY_ROWS:
                 arr = per_ccy[c]
                 if not arr or ep - arr[-1][0] >= 4.9:
                     arr.append((ep, ccy_vals[c]))
-        if not per_ccy and latest:
+        if not rows and latest:
             ep = max(v["ts_epoch"] for v in latest.values()) if latest else utc_now().timestamp()
-            ccy_vals = compute_currency_values({sym: {"mid": latest[sym]["mid"]} for sym in latest})
+            ccy_vals = compute_currency_values(
+                {sym: {"mid": latest[sym]["mid"]} for sym in latest}, self.reference_prices
+            )
             for c in CCY_ROWS:
                 per_ccy[c].append((ep, ccy_vals[c]))
         self.state.per_ccy = per_ccy
@@ -565,6 +641,9 @@ class MarketFeed:
             self.ws.pop(wid, None)
 
     def on_tick(self, payloads: list[dict], rows: list[tuple]):
+        payloads = [payload for payload in payloads if str(payload.get("source", "")).upper() == "MT5"]
+        if not payloads:
+            return
         self.store.insert_many(rows)
         with self.lock:
             now = utc_now()
@@ -586,11 +665,18 @@ class MarketFeed:
                     "ask": float(p["ask"]),
                     "spread": float(p["spread"]),
                     "mid": float(p["mid"]),
-                    "source": p.get("source", "SIM"),
+                    "source": "MT5",
                     "ts_display": now.astimezone(TZ_LAGOS).isoformat(),
                 }
             self.state.latest.update(latest_updates)
-            ccy_vals = compute_currency_values({sym: {"mid": self.state.latest[sym]["mid"]} for sym in self.state.latest})
+            if now_ep - self.reference_refreshed_at >= 60.0 or not self.reference_prices:
+                since = (now - timedelta(hours=self.s.history_hours)).timestamp()
+                self.reference_prices = self.store.reference_prices_since(since_s=since, symbols=self.s.symbols)
+                self.reference_refreshed_at = now_ep
+            ccy_vals = compute_currency_values(
+                {sym: {"mid": self.state.latest[sym]["mid"]} for sym in self.state.latest},
+                self.reference_prices,
+            )
             for c in CCY_ROWS:
                 arr = self.state.per_ccy.setdefault(c, [])
                 if not arr or now_ep - arr[-1][0] >= 4.9:
@@ -677,69 +763,52 @@ class MarketFeed:
                 "total_ticks": self.state.total_ticks,
                 "tick_db": self.store.db_path,
                 "history_hours": self.s.history_hours,
+                "purged_non_mt5_rows": self.store.purged_non_mt5,
             }
 
-    def build_history(self, *, hours: int, symbols: list[str] | None = None) -> dict:
+    def build_history(self, *, hours: int, symbols: list[str] | None = None, limit: int = 1000) -> dict:
         since = (utc_now() - timedelta(hours=hours)).timestamp()
-        raw_rows = list(self.store.symbols_since(since_s=since, symbols=symbols or self.s.symbols))
-        bucket_seconds = 5 * 60
         sym_order = symbols or self.s.symbols
-        per_sym_epoch: dict[str, dict[float, float]] = {s: {} for s in sym_order}
-        for (sym, _ts_utc, ts_epoch, _bid, _ask, _spr, mid) in raw_rows:
-            b = float(ts_epoch) // bucket_seconds * bucket_seconds
-            per_sym_epoch[sym][b] = float(mid)
-        all_buckets = sorted({b for d in per_sym_epoch.values() for b in d.keys()})
-        cur_mid = {s: float(SYMBOL_BASE_PRICES[s]) for s in sym_order}
-        ccy_per_bucket: dict[float, dict[str, float]] = {}
-        for b in all_buckets:
-            for s in sym_order:
-                m = per_sym_epoch[s].get(b)
-                if m is not None:
-                    cur_mid[s] = m
-            ccy_per_bucket[b] = compute_currency_values({sym: {"mid": cur_mid[sym]} for sym in cur_mid})
+        row_limit = max(1, min(MAX_HISTORY_TICK_ROWS, int(limit)))
+        baseline, raw_rows = self.store.recent_tick_rows(since_s=since, symbols=sym_order, limit=row_limit)
+        references = self.store.reference_prices_since(since_s=since, symbols=sym_order)
+        cur_mid = {symbol: float(mid) for symbol, mid in baseline.items()}
+        for symbol, reference in references.items():
+            cur_mid.setdefault(symbol, reference)
+        events: dict[float, list[tuple[str, float]]] = {}
+        for sym, _ts_utc, ts_epoch, _bid, _ask, _spr, mid in raw_rows:
+            events.setdefault(float(ts_epoch), []).append((sym, float(mid)))
+
+        calculated: list[tuple[float, dict[str, float]]] = []
+        for epoch, updates in events.items():
+            for symbol, mid in updates:
+                cur_mid[symbol] = mid
+            raw_values = compute_currency_values(
+                {symbol: {"mid": mid} for symbol, mid in cur_mid.items()}, references
+            )
+            calculated.append((epoch, normalize_strength_percentages(raw_values)))
+
         now = utc_now()
-        cutoff_epoch = (utc_now() - timedelta(hours=hours)).timestamp() // bucket_seconds * bucket_seconds
-        last_epoch = now.timestamp() // bucket_seconds * bucket_seconds
-        wanted_epochs: list[float] = []
-        t = int(last_epoch)
-        while t >= int(cutoff_epoch):
-            wanted_epochs.append(float(t))
-            t -= int(bucket_seconds)
-        wanted_epochs = wanted_epochs[: 24 * 12]
-        filled: dict[float, dict[str, float]] = {}
-        last = {c: 0.0 for c in CCY_ROWS}
-        for b in sorted(ccy_per_bucket.keys(), reverse=True):
-            cur = ccy_per_bucket[b]
-            merged = {}
-            for c in CCY_ROWS:
-                cv = cur.get(c, 0.0)
-                if cv == 0.0 and last[c] != 0.0:
-                    merged[c] = last[c]
-                else:
-                    merged[c] = cv
-                    last[c] = cv
-            filled[b] = merged
         rows_out = []
-        last_vals = {c: 0.0 for c in CCY_ROWS}
-        for b in wanted_epochs:
-            ts_utc = datetime.fromtimestamp(float(b), tz=timezone.utc)
-            if b in filled:
-                vals = filled[b]
-                last_vals = vals
-            else:
-                vals = dict(last_vals)
+        for epoch, values in reversed(calculated[-row_limit:]):
+            ts_utc = datetime.fromtimestamp(epoch, tz=timezone.utc)
             rows_out.append({
-                "key": f"h-{b}",
+                "key": f"tick-{epoch}",
                 "timestamp_utc": ts_utc.isoformat(),
                 "timestamp_display": ts_utc.astimezone(TZ_LAGOS).isoformat(),
-                "values": vals,
-                "source": "ROLLUP",
+                "values": values,
+                "source": "MT5_TICK",
             })
         return {
             "ts_utc": now.isoformat(),
             "ts_display": now.astimezone(TZ_LAGOS).isoformat(),
             "history_hours": hours,
-            "row_interval_seconds": bucket_seconds,
+            "row_interval_seconds": None,
+            "sampling": "tick",
+            "value_unit": "percent",
+            "row_limit": row_limit,
+            "strength_lookback_hours": hours,
+            "feed_source": "MT5",
             "currencies": list(CCY_ROWS),
             "rows": rows_out,
         }
@@ -773,27 +842,20 @@ def create_app(*, redis_client: Any | None = None) -> FastAPI:
     def _startup():
         if app.state.redis is None:
             app.state.redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        mode = settings.feed_mode.upper()
-        if mode == "MT5":
-            w = _MT5FeedWorker(r=app.state.redis, settings=settings, on_tick=on_tick)
-            w.start()
-            app.state.worker = w
-            feed.state.feed_source = "MT5"
+        if settings.feed_mode.upper() != "MT5":
+            log.warning("FEED_MODE=%s ignored: market data is MT5-only", settings.feed_mode)
+        w = _MT5FeedWorker(r=app.state.redis, settings=settings, on_tick=on_tick)
+        w.start()
+        app.state.worker = w
+        feed.state.feed_source = "MT5"
 
-            def _status_updater():
-                while True:
-                    feed.state.mt5_connected = w.connected
-                    feed.state.mt5_error = w.last_error
-                    time.sleep(1.0)
-            threading.Thread(target=_status_updater, daemon=True).start()
-            log.info("market-data MT5 feed worker started")
-        else:
-            w = _SimulatorWorker(r=app.state.redis, settings=settings, on_tick=on_tick)
-            w.start()
-            app.state.worker = w
-            feed.state.feed_source = "SIM"
-            feed.state.mt5_connected = False
-            log.info("market-data simulator started (multi-symbol, %s ms cadence)", settings.tick_ms)
+        def _status_updater():
+            while True:
+                feed.state.mt5_connected = w.connected
+                feed.state.mt5_error = w.last_error
+                time.sleep(1.0)
+        threading.Thread(target=_status_updater, daemon=True).start()
+        log.info("market-data MT5-only feed worker started")
 
     @app.on_event("shutdown")
     def _shutdown():
@@ -848,9 +910,13 @@ def create_app(*, redis_client: Any | None = None) -> FastAPI:
         return feed.build_snapshot()
 
     @app.get("/api/market/history")
-    def api_history(hours: int = Query(24, ge=1, le=24 * 7), symbols: str | None = None):
+    def api_history(
+        hours: int = Query(24, ge=1, le=24 * 7),
+        symbols: str | None = None,
+        limit: int = Query(1000, ge=1, le=MAX_HISTORY_TICK_ROWS),
+    ):
         sym_list = [s.strip() for s in symbols.split(",")] if symbols else None
-        return feed.build_history(hours=hours, symbols=sym_list)
+        return feed.build_history(hours=hours, symbols=sym_list, limit=limit)
 
     @app.websocket("/ws/market")
     async def ws_market(ws: WebSocket):

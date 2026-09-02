@@ -208,6 +208,7 @@ export default function Sidebar() {
 
   return (
     <aside
+      className="appSidebar"
       style={{
         width: 280,
         padding: 18,

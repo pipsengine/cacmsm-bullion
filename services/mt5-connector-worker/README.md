@@ -4,7 +4,7 @@
 
 This monorepo has **two independent MT5 integrations**:
 
-1. **Market data feed (built-in inside `services/market-data-service`)** — live ticks for EURUSD, GBPUSD, USDJPY, AUDUSD, NZDUSD, USDCAD, USDCHF, XAUUSD, exposed as REST + WebSocket + SQLite 24h history.
+1. **Market data feed (built-in inside `services/market-data-service`)** — live MT5 ticks for the 28-currency-pair basket plus XAUUSD, exposed as REST + WebSocket + SQLite 24h history.
 2. **Order execution (this skeleton worker)** — routes `stream:orders` → MT5 `OrderSend`, publishes fills to `stream:executions`.
 
 The MT5 Python API (`MetaTrader5`) is Windows-only, so both integrations are designed to run on your own Windows machine where MetaTrader 5 is installed.
@@ -18,26 +18,16 @@ For the exact Redis stream message shapes and delivery semantics, see:
 
 ## 1. Market data feed (Live ticks → Matrix / 24h page)
 
-The market-data-service runs a built-in optional `_MT5FeedWorker`. When configured, it pulls live ticks directly from the local MT5 terminal via the `MetaTrader5` package and broadcasts:
+The market-data-service runs an MT5-only `_MT5FeedWorker`. It pulls live ticks directly from the local MT5 terminal via the `MetaTrader5` package and broadcasts:
 
 - `GET /api/market/status` — feed diagnostics, MT5 connected, symbols, tick age
 - `GET /api/market/snapshot` — latest tick per symbol, per-currency strengths, 9×13 matrix rows, ranked bias
-- `GET /api/market/history?hours=24` — rolling 5-minute buckets (288 rows for 24h) with Lagos timestamps
+- `GET /api/market/history?hours=24&limit=1000` — latest per-tick relative-strength percentages retained in the 24-hour window, with Lagos timestamps
 - `WS /ws/market` — snapshot + status on connect, `type:tick` broadcast on every tick
 
-All timestamps emit `ts_utc` and `ts_display` (Africa/Lagos). The currency mapping rules are:
+All timestamps emit `ts_utc` and `ts_display` (Africa/Lagos). Each FX score is the average signed log return across the available pairs containing that currency: a rising pair strengthens its base currency and weakens its quote currency. XAU uses XAUUSD only. The cross-market scores are normalized to the 0–100 display scale.
 
-| Currency | Source pair | Rule |
-|---|---|---|
-| EUR | EURUSD | direct normalised mid |
-| GBP | GBPUSD | direct normalised mid |
-| AUD | AUDUSD | direct normalised mid |
-| NZD | NZDUSD | direct normalised mid |
-| CAD | USDCAD | 1 / USDCAD then normalised |
-| CHF | USDCHF | 1 / USDCHF then normalised |
-| JPY | USDJPY | 1 / USDJPY then normalised |
-| USD | — | synthetic average of positives vs negatives |
-| **XAU** | **XAUUSD only** | direct normalised mid (never averaged) |
+Only rows explicitly tagged `MT5` are accepted by the tick store. Legacy and simulated rows are purged during schema initialization, and the service remains offline when MT5 disconnects.
 
 ### Setup (Windows, same box as MT5 terminal)
 
@@ -48,8 +38,7 @@ All timestamps emit `ts_utc` and `ts_display` (Africa/Lagos). The currency mappi
    pip install -r services\market-data-service\requirements.txt
    pip install MetaTrader5
    ```
-2. Open MT5, log in to the target account. In **Market Watch**, ensure these symbols are visible (right-click → *Show All* or add manually):
-   - EURUSD, GBPUSD, USDJPY, AUDUSD, NZDUSD, USDCAD, USDCHF, XAUUSD
+2. Open MT5, log in to the target account. In **Market Watch**, select **Show All** so the configured 28 FX crosses and XAUUSD are available.
 3. Configure `.env` (or system env vars) at repo root:
    ```
    FEED_MODE=MT5
@@ -69,8 +58,8 @@ All timestamps emit `ts_utc` and `ts_display` (Africa/Lagos). The currency mappi
 5. Open `http://localhost:3000/market/matrix` and `http://localhost:3000/market/history-24h`. Expect:
    - Top-right badge turns **MT5 LIVE** (green) when connected.
    - Matrix `TICK` column updates within 750 ms of each MT5 tick.
-   - 24h page inserts a new top row every 5 minutes (roll-up bucket).
-   - If the MT5 terminal dies or gets disconnected, the badge switches to **SIM FALLBACK** (amber) and the pages stay usable on the internal geometric-walk simulator; it auto-resumes when MT5 returns.
+   - 24h page inserts a new top row per recorded tick, displays 0–100% relative strength, and includes seconds in Lagos timestamps.
+   - If the MT5 terminal disconnects, the page reports the outage and does not generate substitute data.
 
 ### Endpoint quick checks (PowerShell)
 

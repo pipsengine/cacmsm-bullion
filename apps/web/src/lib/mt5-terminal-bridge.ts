@@ -44,8 +44,8 @@ export async function readMt5Terminal(): Promise<Mt5TerminalSnapshot> {
   }
 }
 
-export async function readMt5MarketData(mode: "status" | "history", hours = 24): Promise<Record<string, unknown>> {
-  const cacheKey = `${mode}:${hours}`;
+export async function readMt5MarketData(mode: "status" | "history", hours = 24, limit = 1000): Promise<Record<string, unknown>> {
+  const cacheKey = `${mode}:${hours}:${limit}`;
   const holder = globalThis as typeof globalThis & {
     __cacsmsMt5MarketCache?: Map<string, { expires: number; value?: Record<string, unknown>; pending?: Promise<Record<string, unknown>> }>;
   };
@@ -54,11 +54,11 @@ export async function readMt5MarketData(mode: "status" | "history", hours = 24):
   if (cached?.value && cached.expires > Date.now()) return cached.value;
   if (cached?.pending) return cached.pending;
 
-  const pending = readMt5MarketDataUncached(mode, hours);
+  const pending = readMt5MarketDataUncached(mode, hours, limit);
   cache.set(cacheKey, { expires: 0, pending });
   try {
     const value = await pending;
-    cache.set(cacheKey, { expires: Date.now() + (mode === "history" ? 5_000 : 1_000), value });
+    cache.set(cacheKey, { expires: Date.now() + 1_000, value });
     return value;
   } catch (error) {
     cache.delete(cacheKey);
@@ -66,13 +66,13 @@ export async function readMt5MarketData(mode: "status" | "history", hours = 24):
   }
 }
 
-async function readMt5MarketDataUncached(mode: "status" | "history", hours: number): Promise<Record<string, unknown>> {
+async function readMt5MarketDataUncached(mode: "status" | "history", hours: number, limit: number): Promise<Record<string, unknown>> {
   const python = process.env.MT5_PYTHON?.trim() || "python";
   const script = process.env.MT5_MARKET_SCRIPT?.trim()
     || path.resolve(process.cwd(), "../../scripts/mt5_market_data.py");
   try {
     const args = [script, mode];
-    if (mode === "history") args.push("--hours", String(hours));
+    if (mode === "history") args.push("--hours", String(hours), "--limit", String(limit));
     const { stdout } = await execFileAsync(python, args, {
       windowsHide: true, timeout: 20_000, maxBuffer: 8 * 1024 * 1024,
       env: { ...process.env, PYTHONIOENCODING: "utf-8" }

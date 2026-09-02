@@ -5,7 +5,7 @@ import React, { useEffect, useRef, useState } from "react";
 const CURRENCIES = ["AUD", "CAD", "EUR", "NZD", "GBP", "USD", "CHF", "JPY", "XAU"] as const;
 type Currency = (typeof CURRENCIES)[number];
 
-const MAX_ROWS = 24 * 12;
+const MAX_ROWS = 1000;
 
 type HistoryRow = {
   key: string;
@@ -23,7 +23,10 @@ type HistoryResp = {
   mt5_connected?: boolean;
   mt5_error?: string | null;
   history_hours?: number;
-  row_interval_seconds?: number;
+  row_interval_seconds?: number | null;
+  sampling?: string;
+  value_unit?: string;
+  row_limit?: number;
   currencies?: string[];
   rows?: HistoryRow[];
 };
@@ -40,15 +43,15 @@ type StatusResp = {
   history_hours?: number;
 };
 
-const cellClass = (v: number) => (v > 0.02 ? "positive" : v < -0.02 ? "negative" : "neutral");
-const signalText = (v: number) => (v > 0.045 ? "UP" : v < -0.045 ? "DOWN" : "FLAT");
+const cellClass = (v: number) => (v >= 70 ? "positive" : v < 40 ? "negative" : "neutral");
+const signalText = (v: number) => (v >= 70 ? "STRONG" : v < 40 ? "WEAK" : "NEUTRAL");
 
 const STYLES = `
-  .h24Page{ color:#edf4ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .h24Page{ width:100%; min-width:0; color:#edf4ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
   .h24Hero{ display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
   .h24Hero h1{ margin:0; font-size:clamp(1.5rem, 2vw, 2.3rem); letter-spacing:0.04em; }
   .h24Hero p{ margin:8px 0 0; color:#91a5c9; max-width:900px; line-height:1.45; }
-  .h24Toolbar{ display:flex; gap:10px; flex-wrap:wrap; }
+  .h24Toolbar{ display:flex; gap:10px; flex-wrap:wrap; max-width:100%; }
   .h24Chip, .h24NavLink{
     display:inline-flex; align-items:center; gap:8px;
     padding:10px 14px; border-radius:999px; border:1px solid #32456a;
@@ -63,6 +66,7 @@ const STYLES = `
   .h24DotWarn{ background:#f5c24a; box-shadow:0 0 10px rgba(245,194,74,0.9); }
   .h24DotErr{ background:#ef5350; box-shadow:0 0 10px rgba(239,83,80,0.9); }
   .h24Panel{
+    width:100%; min-width:0;
     background:linear-gradient(180deg, rgba(26,41,66,0.92), rgba(12,22,39,0.96));
     border:1px solid #32456a; border-radius:18px; overflow:hidden; box-shadow:0 24px 64px rgba(0,0,0,0.28);
   }
@@ -72,23 +76,24 @@ const STYLES = `
   }
   .h24PanelHead h2{ margin:0; font-size:1rem; letter-spacing:0.04em; }
   .h24PanelHead span{ color:#91a5c9; font-size:0.92rem; }
-  .h24TableWrap{ overflow:auto; max-height:calc(100vh - 220px); }
+  .h24TableWrap{ width:100%; min-width:0; overflow-x:hidden; overflow-y:auto; max-height:calc(100vh - 220px); }
   .h24Table{
-    width:100%; min-width:1150px; border-collapse:separate; border-spacing:0;
+    width:100%; min-width:0; table-layout:fixed; border-collapse:separate; border-spacing:0;
   }
+  .h24Table thead th:first-child{ width:18%; }
   .h24Table thead th{
     position:sticky; top:0; z-index:3; background:#d9e7f0; color:#10203e;
-    padding:12px 10px; border-right:1px solid #b4c4d6; border-bottom:1px solid #b4c4d6;
-    text-transform:uppercase; font-size:0.84rem; letter-spacing:0.05em; white-space:nowrap;
+    padding:12px clamp(3px, 0.65vw, 10px); border-right:1px solid #b4c4d6; border-bottom:1px solid #b4c4d6;
+    text-transform:uppercase; font-size:clamp(0.62rem, 0.8vw, 0.84rem); letter-spacing:0.04em; white-space:nowrap;
   }
   .h24Table thead th:first-child{ left:0; position:sticky; z-index:4; }
   .h24Table tbody th{
     position:sticky; left:0; z-index:2; background:#d9e7f0; color:#10203e;
     padding:12px 12px; border-right:1px solid #b4c4d6; border-bottom:1px solid #b4c4d6;
-    text-align:left; min-width:172px; font-size:0.92rem;
+    text-align:left; min-width:0; font-size:clamp(0.68rem, 0.85vw, 0.92rem); overflow-wrap:anywhere;
   }
   .h24Table td{
-    min-width:92px; padding:11px 8px; text-align:center;
+    min-width:0; padding:11px clamp(2px, 0.5vw, 8px); text-align:center;
     border-right:1px solid rgba(255,255,255,0.08); border-bottom:1px solid rgba(255,255,255,0.08);
     font-variant-numeric:tabular-nums;
     transition: background-color 180ms ease, box-shadow 180ms ease;
@@ -96,7 +101,7 @@ const STYLES = `
   .h24Latest td, .h24Latest th{ box-shadow:inset 0 0 0 1px rgba(255,255,255,0.3); }
   .h24TdPositive{ background:linear-gradient(180deg, rgba(30,150,72,0.96), rgba(16,106,44,0.98)); }
   .h24TdNegative{ background:linear-gradient(180deg, rgba(212,63,63,0.96), rgba(134,23,23,0.98)); }
-  .h24TdNeutral{ background:linear-gradient(180deg, rgba(87,105,136,0.92), rgba(59,72,102,0.96)); }
+  .h24TdNeutral{ background:linear-gradient(180deg, rgba(196,137,25,0.96), rgba(126,82,12,0.98)); }
   .h24TdFlash{ box-shadow:inset 0 0 0 1px rgba(255,255,255,0.55), 0 0 0 2px rgba(126,178,255,0.28); }
   .h24Meta{ display:block; margin-top:4px; font-size:0.68rem; opacity:0.9; letter-spacing:0.05em; }
   .h24Footer{ padding:14px 18px 18px; color:#91a5c9; font-size:0.88rem; }
@@ -107,6 +112,49 @@ const STYLES = `
   }
   .h24BannerErr{
     border-color:#a22; background:rgba(220,70,70,0.12); color:#ff9e9e;
+  }
+  @media (max-width:1100px){
+    .h24Hero{ align-items:flex-start; }
+    .h24Toolbar{ width:100%; }
+    .h24Chip, .h24NavLink{ padding:8px 10px; font-size:0.78rem; }
+    .h24Table thead th:first-child{ width:19%; }
+    .h24Table tbody th{ padding:10px 8px; }
+    .h24Meta{ font-size:0.58rem; }
+  }
+  @media (max-width:760px){
+    .h24Hero h1{ font-size:1.35rem; }
+    .h24Hero p{ font-size:0.86rem; }
+    .h24Toolbar{ display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .h24Chip, .h24NavLink{ min-width:0; justify-content:center; text-align:center; border-radius:12px; box-shadow:none; }
+    .h24PanelHead{ padding:13px 14px; }
+    .h24PanelHead span{ font-size:0.78rem; }
+    .h24TableWrap{ max-height:none; padding:10px; }
+    .h24Table, .h24Table tbody{ display:block; width:100%; }
+    .h24Table thead{ display:none; }
+    .h24Table tbody{ display:grid; gap:10px; }
+    .h24Table tbody tr{
+      display:grid; grid-template-columns:repeat(3, minmax(0, 1fr));
+      overflow:hidden; border:1px solid rgba(255,255,255,0.12); border-radius:12px;
+    }
+    .h24Table tbody th{
+      position:static; grid-column:1 / -1; width:auto; padding:10px 12px;
+      border-right:0; font-size:0.78rem;
+    }
+    .h24Table td{
+      display:flex; min-width:0; padding:9px 4px; align-items:center; justify-content:center;
+      flex-direction:column; font-size:0.82rem;
+    }
+    .h24Table td::before{
+      content:attr(data-currency); display:block; margin-bottom:3px;
+      font-size:0.62rem; font-weight:900; letter-spacing:0.08em; opacity:0.88;
+    }
+    .h24Latest td, .h24Latest th{ box-shadow:none; }
+    .h24Latest{ outline:1px solid rgba(126,178,255,0.65); }
+    .h24Footer{ padding:12px 14px 16px; font-size:0.76rem; line-height:1.5; }
+  }
+  @media (max-width:420px){
+    .h24Toolbar{ grid-template-columns:1fr; }
+    .h24Table tbody tr{ grid-template-columns:repeat(2, minmax(0, 1fr)); }
   }
   @media (prefers-reduced-motion: reduce){ .h24Table td{ transition:none; } }
 `;
@@ -135,13 +183,41 @@ function normalizeValues(v?: Record<string, number> | null): Record<Currency, nu
   return out;
 }
 
+function asPercentages(v?: Record<string, number> | null, alreadyPercent = false): Record<Currency, number> {
+  const values = normalizeValues(v);
+  if (alreadyPercent) {
+    for (const c of CURRENCIES) values[c] = Math.max(0, Math.min(100, values[c]));
+    return values;
+  }
+  const raw = CURRENCIES.map((c) => values[c]);
+  const low = Math.min(...raw);
+  const high = Math.max(...raw);
+  if (Math.abs(high - low) < 1e-12) {
+    for (const c of CURRENCIES) values[c] = 50;
+    return values;
+  }
+  const lowCount = raw.filter((value) => Math.abs(value - low) < 1e-12).length;
+  const highCount = raw.filter((value) => Math.abs(value - high) < 1e-12).length;
+  for (const c of CURRENCIES) {
+    const rawValue = values[c];
+    let percentage = ((rawValue - low) / (high - low)) * 100;
+    if (lowCount > 1 && Math.abs(rawValue - low) < 1e-12) percentage = 0.1;
+    if (highCount > 1 && Math.abs(rawValue - high) < 1e-12) percentage = 99.9;
+    percentage = Math.round(percentage * 10) / 10;
+    if (percentage <= 0 && !(lowCount === 1 && Math.abs(rawValue - low) < 1e-12)) percentage = 0.1;
+    if (percentage >= 100 && !(highCount === 1 && Math.abs(rawValue - high) < 1e-12)) percentage = 99.9;
+    values[c] = percentage;
+  }
+  return values;
+}
+
 export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => void }) {
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [status, setStatus] = useState<StatusResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const flashCounterRef = useRef(0);
-  const rowIntervalRef = useRef<number>(300);
+  const [historyMeta, setHistoryMeta] = useState<Pick<HistoryResp, "sampling" | "value_unit" | "row_limit">>({});
 
   useEffect(() => {
     let alive = true;
@@ -150,7 +226,7 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
     async function fetchAll() {
       try {
         const [histRes, statusRes] = await Promise.all([
-          fetch("/api/market/history?hours=24", { cache: "no-store" }),
+          fetch(`/api/market/history?hours=24&limit=${MAX_ROWS}`, { cache: "no-store" }),
           fetch("/api/market/status", { cache: "no-store" }),
         ]);
         if (!histRes.ok) throw new Error(`history HTTP ${histRes.status}`);
@@ -158,15 +234,15 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         const hist = (await histRes.json()) as HistoryResp;
         const stat = (await statusRes.json()) as StatusResp;
         if (!alive) return;
-        rowIntervalRef.current = Number(hist.row_interval_seconds ?? 300);
         flashCounterRef.current += 1;
         const flash = flashCounterRef.current;
         const nextRows = (hist.rows ?? []).slice(0, MAX_ROWS).map((r, i) => ({
           ...r,
-          values: normalizeValues(r.values),
+          values: asPercentages(r.values, hist.value_unit === "percent"),
           flashTick: i === 0 ? flash : undefined,
         }));
         setRows(nextRows);
+        setHistoryMeta({ sampling: hist.sampling, value_unit: hist.value_unit, row_limit: hist.row_limit });
         setStatus(stat);
         setError(null);
         setLoading(false);
@@ -190,21 +266,20 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
     if (!status) return { label: "LOADING", kind: "warn" as const };
     if (status.mt5_connected) return { label: "MT5 LIVE", kind: "ok" as const };
     if (status.feed_source === "MT5" && !status.mt5_connected) return { label: "MT5 RECONNECTING", kind: "warn" as const };
-    if (status.feed_source === "SIM") return { label: "SIM FALLBACK", kind: "warn" as const };
     return { label: "OFFLINE", kind: "err" as const };
   })();
 
   const latestFlashId = flashCounterRef.current;
 
   return (
-    <div className="h24Page" style={{ width: "min(1550px, calc(100% - 0px))", margin: "0 auto 36px" }}>
+    <div className="h24Page" style={{ maxWidth: 1550, margin: "0 auto 36px" }}>
       <style dangerouslySetInnerHTML={{ __html: STYLES }} />
       <div className="h24Hero">
         <div>
           <h1>CACSMS Bullion 24h Tick History</h1>
           <p>
-            24-hour rolling board with 5-minute aggregated buckets. Newest row on top. All timestamps are Africa/Lagos.
-            XAU column is derived exclusively from XAUUSD.
+            MT5-only relative strength from 0 to 100 for every recorded tick in the 24-hour window. Newest row on top.
+            All timestamps include seconds and use Africa/Lagos. FX strength uses the available 28-pair basket; XAU uses XAUUSD.
           </p>
         </div>
         <div className="h24Toolbar">
@@ -249,10 +324,9 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         </div>
       </div>
 
-      {status?.feed_source === "SIM" && (
-        <div className="h24Banner">
-          MT5 is not connected; data is generated locally by the simulator. Pages will auto-resume when MT5 bridge
-          reconnects.
+      {status && !status.mt5_connected && (
+        <div className="h24Banner h24BannerErr">
+          MT5 is disconnected. No substitute or simulated market data will be generated.
           {status.mt5_error ? ` — ${status.mt5_error}` : ""}
         </div>
       )}
@@ -304,9 +378,8 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
                             : "h24TdNeutral") +
                         (row.flashTick === latestFlashId && isLatest ? " h24TdFlash" : "");
                       return (
-                        <td key={ccy} className={clsName}>
-                          {v >= 0 ? "+" : ""}
-                          {v.toFixed(4)}
+                        <td key={ccy} className={clsName} data-currency={ccy}>
+                          {v.toFixed(1)}
                           <span className="h24Meta">{signalText(v)}</span>
                         </td>
                       );
@@ -318,8 +391,9 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
           </table>
         </div>
         <div className="h24Footer">
-          Row aggregation interval: {rowIntervalRef.current / 60} minutes · History window: {status?.history_hours ?? 24}h
-          · Feed source: {status?.feed_source ?? "—"} · Missing symbols: {status?.missing_symbols?.length ?? 0}
+          Sampling: {historyMeta.sampling === "tick" ? "per MT5 tick" : "per MT5 feed update"} · Values: relative strength score
+          · Showing latest {rows.length} ticks (display limit {historyMeta.row_limit ?? MAX_ROWS}) from the retained {status?.history_hours ?? 24}h window
+          · Feed source: MT5 only · Missing symbols: {status?.missing_symbols?.length ?? 0}
         </div>
       </div>
     </div>

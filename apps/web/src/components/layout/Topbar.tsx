@@ -33,6 +33,7 @@ function Pill({ children, tone }: { children: React.ReactNode; tone?: "ok" | "wa
           : "var(--muted)";
   return (
     <div
+      className="appTopbar"
       style={{
         padding: "8px 12px",
         borderRadius: 999,
@@ -146,13 +147,13 @@ export default function Topbar() {
         backdropFilter: "blur(12px)",
       }}
     >
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div className="appTopbarStatus" style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <Pill tone={statusTone}>{statusLabel}</Pill>
         <Pill>{modeStr} MODE</Pill>
         <Pill>{symbolChip}</Pill>
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div className="appTopbarUser" style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <Pill tone="muted">Dark</Pill>
         <div
           style={{

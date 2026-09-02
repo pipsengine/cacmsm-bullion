@@ -13,16 +13,37 @@ services:
 
   market-data-service:
     redis_url: redis://redis:6379/0
-    feed_mode: SIMULATOR
+    feed_mode: MT5
     tick_ms: 250
     symbols:
-      - EURUSD
-      - GBPUSD
-      - USDJPY
+      - AUDCAD
+      - AUDCHF
+      - AUDJPY
+      - AUDNZD
       - AUDUSD
+      - CADCHF
+      - CADJPY
+      - CHFJPY
+      - EURAUD
+      - EURCAD
+      - EURCHF
+      - EURGBP
+      - EURJPY
+      - EURNZD
+      - EURUSD
+      - GBPAUD
+      - GBPCAD
+      - GBPCHF
+      - GBPJPY
+      - GBPNZD
+      - GBPUSD
+      - NZDCAD
+      - NZDCHF
+      - NZDJPY
       - NZDUSD
       - USDCAD
       - USDCHF
+      - USDJPY
       - XAUUSD
     tick_db_path: data/market_ticks.sqlite3
     history_hours: 24
