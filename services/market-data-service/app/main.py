@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import sqlite3
+import statistics
 import threading
 import time
 from contextlib import closing
@@ -20,6 +21,7 @@ from redis import Redis
 
 from cacsms_shared.config import BaseServiceSettings, load_settings
 from cacsms_shared.json_logging import configure_json_logging
+from cacsms_shared.market_intelligence import analyze_history, analyze_matrix
 from cacsms_shared.redis_streams import xadd_json
 from cacsms_shared.retry import with_retry
 
@@ -138,44 +140,47 @@ def compute_currency_values(
         counts[base_currency] += 1
         counts[quote_currency] += 1
 
+    # With a complete N-currency cross basket, the average signed pair return
+    # is N/(N-1) times the underlying currency factor. Convert it back to that
+    # common factor scale before adding XAU.
+    fx_values = {
+        currency: totals[currency] / counts[currency] if counts[currency] else 0.0
+        for currency in FX_CURRENCIES
+    }
+    populated_fx = [currency for currency in FX_CURRENCIES if counts[currency]]
+    if populated_fx:
+        center = sum(fx_values[currency] for currency in populated_fx) / len(populated_fx)
+        factor_scale = (len(populated_fx) - 1) / len(populated_fx) if len(populated_fx) > 1 else 1.0
+        for currency in populated_fx:
+            fx_values[currency] = (fx_values[currency] - center) * factor_scale
+
+    result = {currency: round(fx_values.get(currency, 0.0), 6) for currency in CCY_ROWS}
     xau_latest = symbols_latest.get("XAUUSD")
     xau_current = float(xau_latest.get("mid", 0.0)) if xau_latest else 0.0
     xau_reference = float(references.get("XAUUSD", 0.0))
     if xau_current > 0.0 and xau_reference > 0.0:
-        totals["XAU"] = math.log(xau_current / xau_reference) * 100.0
-        counts["XAU"] = 1
-
-    return {
-        currency: round(totals[currency] / counts[currency], 6) if counts[currency] else 0.0
-        for currency in CCY_ROWS
-    }
+        # XAUUSD measures XAU minus USD. Add the already-derived USD factor so
+        # XAU is expressed on the same common-factor scale as the FX currencies.
+        result["XAU"] = round(result["USD"] + math.log(xau_current / xau_reference) * 100.0, 6)
+    return result
 
 
 def normalize_strength_percentages(values: dict[str, float]) -> dict[str, float]:
-    """Map one cross-market snapshot to 0..100 without duplicating either extreme."""
-    numeric = {currency: float(values.get(currency, 0.0)) for currency in CCY_ROWS}
-    low = min(numeric.values())
-    high = max(numeric.values())
-    if math.isclose(low, high, rel_tol=0.0, abs_tol=1e-12):
-        return {currency: 50.0 for currency in CCY_ROWS}
+    """Convert cross-market factors to bounded relative-strength z-scores.
 
-    low_count = sum(math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
-    high_count = sum(math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
-    spread = high - low
-    result = {}
-    for currency, value in numeric.items():
-        percentage = (value - low) / spread * 100.0
-        if low_count > 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12):
-            percentage = 0.1
-        elif high_count > 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12):
-            percentage = 99.9
-        percentage = round(percentage, 1)
-        if percentage <= 0.0 and not (low_count == 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12)):
-            percentage = 0.1
-        elif percentage >= 100.0 and not (high_count == 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12)):
-            percentage = 99.9
-        result[currency] = percentage
-    return result
+    A normal CDF preserves ordering and a neutral midpoint without mechanically
+    assigning 0 and 100 to the weakest and strongest instrument on every tick.
+    """
+    numeric = {currency: float(values.get(currency, 0.0)) for currency in CCY_ROWS}
+    mean = statistics.fmean(numeric.values())
+    deviation = statistics.pstdev(numeric.values())
+    if deviation <= 1e-12:
+        return {currency: 50.0 for currency in CCY_ROWS}
+    normal = statistics.NormalDist()
+    return {
+        currency: round(max(0.1, min(99.9, normal.cdf((value - mean) / deviation) * 100.0)), 1)
+        for currency, value in numeric.items()
+    }
 
 
 TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1", "YTD"]
@@ -207,7 +212,7 @@ def higher_timeframe_filter(values: dict[str, float]) -> str:
     anchors = [float(values.get(timeframe, 50.0)) for timeframe in ("D1", "W1", "MN1")]
     if all(value >= 70.0 for value in anchors):
         return "STRONG"
-    if all(value < 40.0 for value in anchors):
+    if all(value <= 30.0 for value in anchors):
         return "WEAK"
     return "NEUTRAL"
 
@@ -678,38 +683,33 @@ class MarketFeed:
         self._seed_from_store()
 
     def _seed_from_store(self):
-        since = (utc_now() - timedelta(days=31)).timestamp()
         since = (utc_now() - timedelta(hours=self.s.history_hours)).timestamp()
         rows = self.store.symbols_since(since_s=since, symbols=self.s.symbols)
         latest = self.store.latest_per_symbol(self.s.symbols)
         self.reference_prices = self.store.reference_prices_since(since_s=since, symbols=self.s.symbols)
         self.reference_refreshed_at = utc_now().timestamp()
         per_ccy: dict[str, list[tuple[float, float]]] = {c: [] for c in CCY_ROWS}
-        per_sym_grouped: dict[str, list[tuple[float, float]]] = {}
-        for (sym, _ts_utc, epoch, _b, _a, _spr, mid) in rows:
-            per_sym_grouped.setdefault(sym, []).append((float(epoch), float(mid)))
         if latest:
             self.state.latest = latest
-        all_epochs = sorted({e for vals in per_sym_grouped.values() for e, _ in vals})
-        sym_mid = {sym: per_sym_grouped.get(sym, []) for sym in self.s.symbols}
-        idxs = {sym: 0 for sym in self.s.symbols}
         current_mid = dict(self.reference_prices)
-        for ep in all_epochs:
-            for sym in self.s.symbols:
-                while idxs[sym] < len(sym_mid[sym]):
-                    e, m = sym_mid[sym][idxs[sym]]
-                    if e <= ep:
-                        current_mid[sym] = m
-                        idxs[sym] += 1
-                    else:
-                        break
+        last_sample_epoch = 0.0
+        for index, (sym, _ts_utc, epoch, _b, _a, _spr, mid) in enumerate(rows):
+            ep = float(epoch)
+            current_mid[sym] = float(mid)
+            # Apply every symbol update sharing this timestamp before sampling.
+            if index + 1 < len(rows) and float(rows[index + 1][2]) == ep:
+                continue
+            # Only retained five-second points need a full 28-pair calculation.
+            # A single chronological pass avoids rescanning all symbols for each
+            # raw event when restoring a populated 24-hour store.
+            if last_sample_epoch and ep - last_sample_epoch < 4.9:
+                continue
             ccy_vals = compute_currency_values(
                 {sym: {"mid": current_mid[sym]} for sym in current_mid}, self.reference_prices
             )
             for c in CCY_ROWS:
-                arr = per_ccy[c]
-                if not arr or ep - arr[-1][0] >= 4.9:
-                    arr.append((ep, ccy_vals[c]))
+                per_ccy[c].append((ep, ccy_vals[c]))
+            last_sample_epoch = ep
         if not rows and latest:
             ep = max(v["ts_epoch"] for v in latest.values()) if latest else utc_now().timestamp()
             ccy_vals = compute_currency_values(
@@ -831,6 +831,13 @@ class MarketFeed:
                 key=lambda x: x["avg_bias"],
                 reverse=True,
             )
+            missing_symbols = [symbol for symbol in self.s.symbols if symbol not in self.state.latest]
+            intelligence = analyze_matrix(
+                matrix,
+                symbols=self.s.symbols,
+                connected=self.state.mt5_connected,
+                missing_symbols=missing_symbols,
+            )
             now = utc_now()
             return {
                 "ts_utc": now.isoformat(),
@@ -850,6 +857,7 @@ class MarketFeed:
                     for c in CCY_ROWS
                 ],
                 "ranked_bias": ranked,
+                "intelligence": intelligence,
                 "value_unit": "percent",
                 "sampling": "live_mt5",
             }
@@ -887,13 +895,17 @@ class MarketFeed:
             events.setdefault(float(ts_epoch), []).append((sym, float(mid)))
 
         calculated: list[tuple[float, dict[str, float]]] = []
+        previous_values: dict[str, float] | None = None
         for epoch, updates in events.items():
             for symbol, mid in updates:
                 cur_mid[symbol] = mid
             raw_values = compute_currency_values(
                 {symbol: {"mid": mid} for symbol, mid in cur_mid.items()}, references
             )
-            calculated.append((epoch, normalize_strength_percentages(raw_values)))
+            percentages = normalize_strength_percentages(raw_values)
+            if percentages != previous_values:
+                calculated.append((epoch, percentages))
+                previous_values = percentages
 
         now = utc_now()
         rows_out = []
@@ -906,18 +918,20 @@ class MarketFeed:
                 "values": values,
                 "source": "MT5_TICK",
             })
+        intelligence = analyze_history(rows_out)
         return {
             "ts_utc": now.isoformat(),
             "ts_display": now.astimezone(TZ_LAGOS).isoformat(),
             "history_hours": hours,
             "row_interval_seconds": None,
-            "sampling": "tick",
+            "sampling": "strength_change",
             "value_unit": "percent",
             "row_limit": row_limit,
             "strength_lookback_hours": hours,
             "feed_source": "MT5",
             "currencies": list(CCY_ROWS),
             "rows": rows_out,
+            "intelligence": intelligence,
         }
 
 

@@ -22,7 +22,7 @@ The market-data-service runs an MT5-only `_MT5FeedWorker`. It pulls live ticks d
 
 - `GET /api/market/status` — feed diagnostics, MT5 connected, symbols, tick age
 - `GET /api/market/snapshot` — latest tick per symbol, per-currency strengths, 9×13 matrix rows, ranked bias
-- `GET /api/market/history?hours=24&limit=1000` — latest per-tick relative-strength percentages retained in the 24-hour window, with Lagos timestamps
+- `GET /api/market/history?hours=24&limit=1000` — latest changed standardized-strength snapshots retained in the 24-hour window, with Lagos timestamps
 - `WS /ws/market` — snapshot + status on connect, `type:tick` broadcast on every tick
 
 All timestamps emit `ts_utc` and `ts_display` (Africa/Lagos). Each FX score is the average signed log return across the available pairs containing that currency: a rising pair strengthens its base currency and weakens its quote currency. XAU uses XAUUSD only. The cross-market scores are normalized to the 0–100 display scale.

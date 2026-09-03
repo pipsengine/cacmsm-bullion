@@ -5,11 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import statistics
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import MetaTrader5 as mt5
+
+SHARED_PATH = Path(__file__).resolve().parents[1] / "services" / "_shared"
+if str(SHARED_PATH) not in sys.path:
+    sys.path.insert(0, str(SHARED_PATH))
+
+from cacsms_shared.market_intelligence import analyze_history, analyze_matrix
 
 
 SYMBOLS = [
@@ -45,7 +53,7 @@ def higher_timeframe_filter(values: dict[str, float]) -> str:
     anchors = [float(values.get(timeframe, 50.0)) for timeframe in ("D1", "W1", "MN1")]
     if all(value >= 70.0 for value in anchors):
         return "STRONG"
-    if all(value < 40.0 for value in anchors):
+    if all(value <= 30.0 for value in anchors):
         return "WEAK"
     return "NEUTRAL"
 
@@ -63,41 +71,36 @@ def strength(prices: dict[str, float], references: dict[str, float]) -> dict[str
         totals[quote_currency] -= pair_return
         counts[base_currency] += 1
         counts[quote_currency] += 1
+    fx_values = {
+        currency: totals[currency] / counts[currency] if counts[currency] else 0.0
+        for currency in FX_CURRENCIES
+    }
+    populated_fx = [currency for currency in FX_CURRENCIES if counts[currency]]
+    if populated_fx:
+        center = sum(fx_values[currency] for currency in populated_fx) / len(populated_fx)
+        factor_scale = (len(populated_fx) - 1) / len(populated_fx) if len(populated_fx) > 1 else 1.0
+        for currency in populated_fx:
+            fx_values[currency] = (fx_values[currency] - center) * factor_scale
+    result = {currency: round(fx_values.get(currency, 0.0), 6) for currency in CURRENCIES}
+
     xau_current = float(prices.get("XAUUSD", 0.0))
     xau_reference = float(references.get("XAUUSD", 0.0))
     if xau_current > 0.0 and xau_reference > 0.0:
-        totals["XAU"] = math.log(xau_current / xau_reference) * 100.0
-        counts["XAU"] = 1
-    return {
-        currency: round(totals[currency] / counts[currency], 6) if counts[currency] else 0.0
-        for currency in CURRENCIES
-    }
+        result["XAU"] = round(result["USD"] + math.log(xau_current / xau_reference) * 100.0, 6)
+    return result
 
 
 def strength_percentages(values: dict[str, float]) -> dict[str, float]:
     numeric = {currency: float(values.get(currency, 0.0)) for currency in CURRENCIES}
-    low = min(numeric.values())
-    high = max(numeric.values())
-    if math.isclose(low, high, rel_tol=0.0, abs_tol=1e-12):
+    mean = statistics.fmean(numeric.values())
+    deviation = statistics.pstdev(numeric.values())
+    if deviation <= 1e-12:
         return {currency: 50.0 for currency in CURRENCIES}
-
-    low_count = sum(math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
-    high_count = sum(math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12) for value in numeric.values())
-    spread = high - low
-    result = {}
-    for currency, value in numeric.items():
-        percentage = (value - low) / spread * 100.0
-        if low_count > 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12):
-            percentage = 0.1
-        elif high_count > 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12):
-            percentage = 99.9
-        percentage = round(percentage, 1)
-        if percentage <= 0.0 and not (low_count == 1 and math.isclose(value, low, rel_tol=0.0, abs_tol=1e-12)):
-            percentage = 0.1
-        elif percentage >= 100.0 and not (high_count == 1 and math.isclose(value, high, rel_tol=0.0, abs_tol=1e-12)):
-            percentage = 99.9
-        result[currency] = percentage
-    return result
+    normal = statistics.NormalDist()
+    return {
+        currency: round(max(0.1, min(99.9, normal.cdf((value - mean) / deviation) * 100.0)), 1)
+        for currency, value in numeric.items()
+    }
 
 
 def connect() -> tuple[object, object]:
@@ -227,6 +230,12 @@ def snapshot_payload(terminal, hours: int = 24) -> dict:
         key=lambda item: item["avg_bias"],
         reverse=True,
     )
+    intelligence = analyze_matrix(
+        matrix,
+        symbols=SYMBOLS,
+        connected=bool(terminal.connected),
+        missing_symbols=missing,
+    )
     return {
         "ts_utc": now.isoformat(),
         "ts_display": now.astimezone(LAGOS).isoformat(),
@@ -247,6 +256,7 @@ def snapshot_payload(terminal, hours: int = 24) -> dict:
             for currency in CURRENCIES
         ],
         "ranked_bias": ranked,
+        "intelligence": intelligence,
         "value_unit": "percent",
         "sampling": "live_mt5",
     }
@@ -319,11 +329,16 @@ def history_payload(terminal, hours: int, limit: int) -> dict:
                 prices[symbol] = points[max(prior_epochs)]
     rows = []
     calculated: dict[float, dict[str, float]] = {}
+    previous_values: dict[str, float] | None = None
     for raw_epoch in sorted(raw_epochs):
         for symbol in SYMBOLS:
             if raw_epoch in per_symbol[symbol]:
                 prices[symbol] = per_symbol[symbol][raw_epoch]
-        calculated[raw_epoch - clock_offset] = strength_percentages(strength(prices, references))
+        percentages = strength_percentages(strength(prices, references))
+        if percentages != previous_values:
+            calculated[raw_epoch - clock_offset] = percentages
+            previous_values = percentages
+    epochs = sorted(calculated, reverse=True)[:row_limit]
     for epoch in epochs:
         utc = datetime.fromtimestamp(epoch, timezone.utc)
         rows.append({
@@ -331,12 +346,13 @@ def history_payload(terminal, hours: int, limit: int) -> dict:
             "timestamp_display": utc.astimezone(LAGOS).isoformat(),
             "values": calculated[epoch], "source": "MT5_TICK",
         })
+    intelligence = analyze_history(rows)
     return {
         "ts_utc": now.isoformat(), "ts_display": now.astimezone(LAGOS).isoformat(),
         "feed_source": "MT5", "mt5_connected": bool(terminal.connected), "mt5_error": None,
-        "history_hours": hours, "row_interval_seconds": None, "sampling": "tick",
+        "history_hours": hours, "row_interval_seconds": None, "sampling": "strength_change",
         "value_unit": "percent", "row_limit": row_limit, "strength_lookback_hours": hours,
-        "currencies": CURRENCIES, "rows": rows,
+        "currencies": CURRENCIES, "rows": rows, "intelligence": intelligence,
     }
 
 

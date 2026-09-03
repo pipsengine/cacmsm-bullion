@@ -6,6 +6,9 @@ const CURRENCIES = ["AUD", "CAD", "EUR", "NZD", "GBP", "USD", "CHF", "JPY", "XAU
 type Currency = (typeof CURRENCIES)[number];
 
 const MAX_ROWS = 1000;
+const POLL_ROWS = 40;
+const POLL_INTERVAL_MS = 1500;
+const STATUS_INTERVAL_MS = 10_000;
 
 type HistoryRow = {
   key: string;
@@ -14,6 +17,23 @@ type HistoryRow = {
   values: Record<Currency, number>;
   source: string;
   flashTick?: number;
+};
+
+type HistoryIntelligence = {
+  engine: string;
+  advisory_only: boolean;
+  verdict: "PERSISTENT" | "DEVELOPING" | "REVERSAL" | "NEUTRAL" | "INSUFFICIENT_DATA" | string;
+  symbol?: string;
+  direction: "BUY" | "SELL" | "NEUTRAL" | string;
+  confidence: number;
+  samples: number;
+  persistence_percent?: number;
+  current_gap?: number;
+  gap_change?: number;
+  strongest?: { currency: string; score: number };
+  weakest?: { currency: string; score: number };
+  risk_flags: string[];
+  reason: string;
 };
 
 type HistoryResp = {
@@ -29,6 +49,7 @@ type HistoryResp = {
   row_limit?: number;
   currencies?: string[];
   rows?: HistoryRow[];
+  intelligence?: HistoryIntelligence;
 };
 
 type StatusResp = {
@@ -43,8 +64,8 @@ type StatusResp = {
   history_hours?: number;
 };
 
-const cellClass = (v: number) => (v >= 70 ? "positive" : v < 40 ? "negative" : "neutral");
-const signalText = (v: number) => (v >= 70 ? "STRONG" : v < 40 ? "WEAK" : "NEUTRAL");
+const cellClass = (v: number) => (v >= 70 ? "positive" : v <= 30 ? "negative" : "neutral");
+const signalText = (v: number) => (v >= 70 ? "STRONG" : v <= 30 ? "WEAK" : "NEUTRAL");
 
 const STYLES = `
   .h24Page{ width:100%; min-width:0; color:#edf4ff; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -113,6 +134,16 @@ const STYLES = `
   .h24BannerErr{
     border-color:#a22; background:rgba(220,70,70,0.12); color:#ff9e9e;
   }
+  .h24Intel{ margin-bottom:18px; }
+  .h24IntelBody{ padding:16px 18px 18px; display:grid; gap:14px; }
+  .h24IntelGrid{ display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
+  .h24IntelStat{ padding:12px 14px; border-radius:13px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.07); }
+  .h24IntelStat small{ display:block; color:#91a5c9; margin-bottom:5px; font-size:0.68rem; font-weight:800; letter-spacing:0.06em; }
+  .h24IntelReason{ padding:12px 14px; border-radius:12px; background:rgba(11,21,38,0.7); line-height:1.5; }
+  .h24IntelRisks{ color:#91a5c9; font-size:0.82rem; }
+  .h24VerdictGood{ color:#65ea8b; }
+  .h24VerdictCaution{ color:#ffd26a; }
+  .h24VerdictRisk{ color:#ff8282; }
   @media (max-width:1100px){
     .h24Hero{ align-items:flex-start; }
     .h24Toolbar{ width:100%; }
@@ -120,6 +151,7 @@ const STYLES = `
     .h24Table thead th:first-child{ width:19%; }
     .h24Table tbody th{ padding:10px 8px; }
     .h24Meta{ font-size:0.58rem; }
+    .h24IntelGrid{ grid-template-columns:repeat(3,minmax(0,1fr)); }
   }
   @media (max-width:760px){
     .h24Hero h1{ font-size:1.35rem; }
@@ -151,6 +183,7 @@ const STYLES = `
     .h24Latest td, .h24Latest th{ box-shadow:none; }
     .h24Latest{ outline:1px solid rgba(126,178,255,0.65); }
     .h24Footer{ padding:12px 14px 16px; font-size:0.76rem; line-height:1.5; }
+    .h24IntelGrid{ grid-template-columns:repeat(2,minmax(0,1fr)); }
   }
   @media (max-width:420px){
     .h24Toolbar{ grid-template-columns:1fr; }
@@ -164,13 +197,16 @@ function formatTimestamp(ts?: string): string {
   try {
     const d = new Date(ts);
     if (Number.isNaN(d.getTime())) return ts;
-    return d.toLocaleString(undefined, {
+    return d.toLocaleString("en-GB", {
+      timeZone: "Africa/Lagos",
       year: "2-digit",
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
+      fractionalSecondDigits: 3,
+      hour12: false,
     });
   } catch {
     return ts;
@@ -216,49 +252,73 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
   const [status, setStatus] = useState<StatusResp | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [intelligence, setIntelligence] = useState<HistoryIntelligence | null>(null);
   const flashCounterRef = useRef(0);
+  const initialHistoryLoadedRef = useRef(false);
   const [historyMeta, setHistoryMeta] = useState<Pick<HistoryResp, "sampling" | "value_unit" | "row_limit">>({});
 
   useEffect(() => {
     let alive = true;
-    let poll: ReturnType<typeof setInterval> | null = null;
+    let poll: ReturnType<typeof setTimeout> | null = null;
+    let lastStatusFetch = 0;
 
-    async function fetchAll() {
+    async function fetchAll(initial = false) {
       try {
+        const now = Date.now();
+        const shouldFetchStatus = initial || now - lastStatusFetch >= STATUS_INTERVAL_MS;
+        const fullLoad = initial || !initialHistoryLoadedRef.current;
+        const historyLimit = fullLoad ? MAX_ROWS : POLL_ROWS;
         const [histRes, statusRes] = await Promise.all([
-          fetch(`/api/market/history?hours=24&limit=${MAX_ROWS}`, { cache: "no-store" }),
-          fetch("/api/market/status", { cache: "no-store" }),
+          fetch(`/api/market/history?hours=24&limit=${historyLimit}`, { cache: "no-store" }),
+          shouldFetchStatus ? fetch("/api/market/status", { cache: "no-store" }) : Promise.resolve(null),
         ]);
         if (!histRes.ok) throw new Error(`history HTTP ${histRes.status}`);
-        if (!statusRes.ok) throw new Error(`status HTTP ${statusRes.status}`);
+        if (statusRes && !statusRes.ok) throw new Error(`status HTTP ${statusRes.status}`);
         const hist = (await histRes.json()) as HistoryResp;
-        const stat = (await statusRes.json()) as StatusResp;
+        const stat = statusRes ? (await statusRes.json()) as StatusResp : null;
         if (!alive) return;
         flashCounterRef.current += 1;
         const flash = flashCounterRef.current;
-        const nextRows = (hist.rows ?? []).slice(0, MAX_ROWS).map((r, i) => ({
+        const incomingRows = (hist.rows ?? []).map((r, i) => ({
           ...r,
           values: asPercentages(r.values, hist.value_unit === "percent"),
           flashTick: i === 0 ? flash : undefined,
         }));
-        setRows(nextRows);
-        setHistoryMeta({ sampling: hist.sampling, value_unit: hist.value_unit, row_limit: hist.row_limit });
-        setStatus(stat);
+        setRows((current) => {
+          if (fullLoad) return incomingRows.slice(0, MAX_ROWS);
+          const byKey = new Map(current.map((row) => [row.key, row]));
+          for (const row of incomingRows) byKey.set(row.key, row);
+          return [...byKey.values()]
+            .sort((left, right) => Date.parse(right.timestamp_utc ?? "") - Date.parse(left.timestamp_utc ?? ""))
+            .slice(0, MAX_ROWS);
+        });
+        initialHistoryLoadedRef.current = true;
+        setIntelligence(hist.intelligence ?? null);
+        setHistoryMeta((current) => ({
+          sampling: hist.sampling,
+          value_unit: hist.value_unit,
+          row_limit: fullLoad ? hist.row_limit : current.row_limit,
+        }));
+        if (stat) {
+          setStatus(stat);
+          lastStatusFetch = now;
+        }
         setError(null);
         setLoading(false);
       } catch (e: any) {
         if (!alive) return;
         setError(e?.message ?? "Failed to load history");
         setLoading(false);
+      } finally {
+        if (alive) poll = setTimeout(() => fetchAll(false), POLL_INTERVAL_MS);
       }
     }
 
-    fetchAll();
-    poll = setInterval(fetchAll, 1500);
+    fetchAll(true);
 
     return () => {
       alive = false;
-      if (poll) clearInterval(poll);
+      if (poll) clearTimeout(poll);
     };
   }, []);
 
@@ -270,6 +330,11 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
   })();
 
   const latestFlashId = flashCounterRef.current;
+  const verdictClass = intelligence?.verdict === "PERSISTENT"
+    ? "h24VerdictGood"
+    : intelligence?.verdict === "REVERSAL" || intelligence?.verdict === "INSUFFICIENT_DATA"
+      ? "h24VerdictRisk"
+      : "h24VerdictCaution";
 
   return (
     <div className="h24Page" style={{ maxWidth: 1550, margin: "0 auto 36px" }}>
@@ -278,7 +343,7 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         <div>
           <h1>CACSMS Bullion 24h Tick History</h1>
           <p>
-            MT5-only relative strength from 0 to 100 for every recorded tick in the 24-hour window. Newest row on top.
+            MT5-only relative strength from 0 to 100 for each meaningful strength change in the 24-hour window. Newest row on top.
             All timestamps include seconds and use Africa/Lagos. FX strength uses the available 28-pair basket; XAU uses XAUUSD.
           </p>
         </div>
@@ -331,6 +396,30 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
         </div>
       )}
       {error && rows.length === 0 && <div className="h24Banner h24BannerErr">Market feed unreachable: {error}</div>}
+
+      <div className="h24Panel h24Intel">
+        <div className="h24PanelHead">
+          <div>
+            <h2>System Intelligence · Persistence</h2>
+            <span>Advisory-only analysis of changed XAUUSD strength snapshots</span>
+          </div>
+          <strong className={verdictClass}>{intelligence?.verdict?.replaceAll("_", " ") ?? "WAITING FOR DATA"}</strong>
+        </div>
+        <div className="h24IntelBody">
+          <div className="h24IntelGrid">
+            <div className="h24IntelStat"><small>DIRECTION</small><strong>{intelligence?.direction ?? "—"}</strong></div>
+            <div className="h24IntelStat"><small>CONFIDENCE</small><strong>{intelligence ? `${intelligence.confidence}%` : "—"}</strong></div>
+            <div className="h24IntelStat"><small>PERSISTENCE</small><strong>{intelligence?.persistence_percent != null ? `${intelligence.persistence_percent}%` : "—"}</strong></div>
+            <div className="h24IntelStat"><small>CURRENT GAP</small><strong>{intelligence?.current_gap?.toFixed(1) ?? "—"}</strong></div>
+            <div className="h24IntelStat"><small>GAP CHANGE</small><strong>{intelligence?.gap_change != null ? `${intelligence.gap_change >= 0 ? "+" : ""}${intelligence.gap_change.toFixed(1)}` : "—"}</strong></div>
+            <div className="h24IntelStat"><small>SAMPLES</small><strong>{intelligence?.samples ?? 0}</strong></div>
+          </div>
+          <div className="h24IntelReason">{intelligence?.reason ?? "Waiting for enough history to assess persistence."}</div>
+          <div className="h24IntelRisks">
+            Risk flags: {intelligence?.risk_flags?.map((flag) => flag.replaceAll("_", " ")).join(" · ") || "none detected by the available market data"}
+          </div>
+        </div>
+      </div>
 
       <div className="h24Panel">
         <div className="h24PanelHead">
@@ -391,8 +480,8 @@ export default function History24hPage({ onOpenMatrix }: { onOpenMatrix?: () => 
           </table>
         </div>
         <div className="h24Footer">
-          Sampling: {historyMeta.sampling === "tick" ? "per MT5 tick" : "per MT5 feed update"} · Values: relative strength score
-          · Showing latest {rows.length} ticks (display limit {historyMeta.row_limit ?? MAX_ROWS}) from the retained {status?.history_hours ?? 24}h window
+          Sampling: {historyMeta.sampling === "strength_change" ? "changed strength values" : "per MT5 feed update"} · Values: standardized relative strength score
+          · Showing latest {rows.length} changes (display limit {historyMeta.row_limit ?? MAX_ROWS}) from the retained {status?.history_hours ?? 24}h window
           · Feed source: MT5 only · Missing symbols: {status?.missing_symbols?.length ?? 0}
         </div>
       </div>

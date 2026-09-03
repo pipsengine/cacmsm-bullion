@@ -22,6 +22,26 @@ type SymbolTick = {
 
 type FilterSignal = "STRONG" | "NEUTRAL" | "WEAK";
 type MatrixRow = { currency: Currency; values: Record<Tf, number>; htf_filter?: FilterSignal };
+type MarketIntelligence = {
+  engine: string;
+  advisory_only: boolean;
+  verdict: "TECHNICAL_READY" | "SETUP_FORMING" | "WATCH" | "NO_TRADE" | string;
+  symbol: string;
+  direction: "BUY" | "SELL" | "NEUTRAL" | string;
+  confidence: number;
+  regime: string;
+  strength_gap: number;
+  xau_strength: number;
+  usd_strength: number;
+  strongest: { currency: string; score: number };
+  weakest: { currency: string; score: number };
+  supporting_timeframes: string[];
+  conflicting_timeframes: string[];
+  data_quality: number;
+  risk_flags: string[];
+  reason: string;
+  candidate_pairs: Array<{ symbol: string; direction: string; strong_currency: string; weak_currency: string; strength_gap: number }>;
+};
 
 type Snapshot = {
   ts_utc?: string;
@@ -36,14 +56,15 @@ type Snapshot = {
   ranked_bias?: { currency: Currency; avg_bias: number }[];
   value_unit?: string;
   sampling?: string;
+  intelligence?: MarketIntelligence;
 };
 
-const trendFromValue = (v: number) => (v >= 70 ? "STRONG" : v < 40 ? "WEAK" : "NEUTRAL");
-const cellClass = (v: number) => (v >= 70 ? "positive" : v < 40 ? "negative" : "neutral");
+const trendFromValue = (v: number) => (v >= 70 ? "STRONG" : v <= 30 ? "WEAK" : "NEUTRAL");
+const cellClass = (v: number) => (v >= 70 ? "positive" : v <= 30 ? "negative" : "neutral");
 const higherTimeframeFilter = (values: Record<Tf, number>): FilterSignal => {
   const anchors = [values.D1, values.W1, values.MN1];
   if (anchors.every((value) => value >= 70)) return "STRONG";
-  if (anchors.every((value) => value < 40)) return "WEAK";
+  if (anchors.every((value) => value <= 30)) return "WEAK";
   return "NEUTRAL";
 };
 
@@ -79,12 +100,12 @@ const STYLES = `
   .mxPanelHead span{ color:#91a5c9; font-size:0.92rem; }
   .mxPanelTitle{ display:grid; gap:5px; }
   .mxMatrixControls{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .mxMatrixControls select, .mxMatrixControls button{
+  .mxMatrixControls select{
     min-height:34px; padding:6px 10px; border:1px solid #4a638d; border-radius:9px;
     background:#111e34; color:#ecf3ff; font:inherit; font-size:0.78rem; font-weight:700;
   }
-  .mxMatrixControls button{ cursor:pointer; }
-  .mxMatrixControls button:hover{ border-color:#7d9bd0; }
+  .mxMatrixControls select{ cursor:pointer; }
+  .mxMatrixControls select:hover{ border-color:#7d9bd0; }
   .mxTableWrap{ width:100%; min-width:0; overflow-x:hidden; overflow-y:auto; }
   .mxTable{ width:100%; min-width:0; table-layout:fixed; border-collapse:separate; border-spacing:0; }
   .mxTable thead th:first-child{ width:7%; }
@@ -137,6 +158,20 @@ const STYLES = `
   .mxBannerErr{
     border-color:#a22; background:rgba(220,70,70,0.12); color:#ff9e9e;
   }
+  .mxIntel{ margin:18px 0; }
+  .mxIntelBody{ padding:16px 18px 18px; display:grid; gap:14px; }
+  .mxIntelGrid{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+  .mxIntelStat{ padding:12px 14px; border-radius:13px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.07); }
+  .mxIntelStat small{ display:block; color:#91a5c9; margin-bottom:5px; font-size:0.7rem; font-weight:800; letter-spacing:0.06em; }
+  .mxIntelStat strong{ font-size:1rem; }
+  .mxIntelReason{ padding:12px 14px; border-radius:12px; background:rgba(11,21,38,0.7); line-height:1.5; }
+  .mxIntelRows{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .mxIntelList{ padding:12px 14px; border:1px solid rgba(255,255,255,0.07); border-radius:12px; }
+  .mxIntelList b{ display:block; margin-bottom:7px; }
+  .mxIntelList span{ color:#91a5c9; font-size:0.82rem; line-height:1.5; }
+  .mxVerdictReady{ color:#65ea8b; }
+  .mxVerdictCaution{ color:#ffd26a; }
+  .mxVerdictStop{ color:#ff8282; }
   @media (max-width:1120px){
     .mxGrid{ grid-template-columns:1fr; }
     .mxChip, .mxNavLink{ padding:8px 10px; font-size:0.78rem; }
@@ -150,7 +185,7 @@ const STYLES = `
     .mxPanelHead{ padding:13px 14px; }
     .mxPanelHead span{ font-size:0.78rem; }
     .mxMatrixControls{ width:100%; }
-    .mxMatrixControls select, .mxMatrixControls button{ flex:1; min-width:0; }
+    .mxMatrixControls select{ flex:1; min-width:0; }
     .mxTableWrap{ padding:10px; }
     .mxTable, .mxTable tbody{ display:block; width:100%; }
     .mxTable thead{ display:none; }
@@ -172,6 +207,8 @@ const STYLES = `
       font-size:0.6rem; font-weight:900; letter-spacing:0.07em; opacity:0.88;
     }
     .mxTdUpdated{ transform:none; }
+    .mxIntelGrid{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .mxIntelRows{ grid-template-columns:1fr; }
   }
   @media (max-width:520px){
     .mxToolbar{ grid-template-columns:1fr; }
@@ -239,7 +276,7 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updated, setUpdated] = useState<Record<string, number>>({});
-  const [signalFilter, setSignalFilter] = useState<"ALL" | FilterSignal>("ALL");
+  const [signalFilter, setSignalFilter] = useState<"ALL" | "EXTREMES" | FilterSignal>("ALL");
   const [strongestFirst, setStrongestFirst] = useState(true);
   const tickRef = useRef(0);
   const prevMatrixRef = useRef<Record<Currency, Record<Tf, number>>>(EMPTY_MATRIX);
@@ -316,24 +353,44 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
   })();
 
   const visibleCurrencies = useMemo(() => {
-    const signalRank: Record<FilterSignal, number> = { STRONG: 2, NEUTRAL: 1, WEAK: 0 };
-    return [...CURRENCIES]
-      .filter((currency) => {
-        const signal = higherTimeframeFilter(matrixState[currency]);
-        return signalFilter === "ALL" || signal === signalFilter;
-      })
-      .sort((left, right) => {
-        const leftSignal = higherTimeframeFilter(matrixState[left]);
-        const rightSignal = higherTimeframeFilter(matrixState[right]);
+    const sorted = [...CURRENCIES].sort((left, right) => {
         const direction = strongestFirst ? 1 : -1;
-        const signalDifference = signalRank[rightSignal] - signalRank[leftSignal];
-        if (signalDifference !== 0) return signalDifference * direction;
+        // Compare high-to-low timeframes and place the resulting currency rank
+        // vertically. Lower timeframes only break ties in higher timeframes.
         for (const timeframe of TOP_DOWN_TIMEFRAMES) {
           const difference = matrixState[right][timeframe] - matrixState[left][timeframe];
           if (Math.abs(difference) >= 0.05) return difference * direction;
         }
         return left.localeCompare(right);
       });
+    if (signalFilter === "EXTREMES") {
+      const dailySorted = [...CURRENCIES].sort((left, right) => {
+        const difference = matrixState[right].D1 - matrixState[left].D1;
+        if (Math.abs(difference) >= 0.05) return difference;
+        return left.localeCompare(right);
+      });
+      const dailyStrongest = dailySorted[0];
+      const dailyWeakest = dailySorted[dailySorted.length - 1];
+      let selected: Currency[] = [dailyStrongest, dailyWeakest];
+
+      // XAU should not consume one of the two currency comparison slots. When
+      // gold is a daily extreme, retain it and add both FX currency extremes.
+      if (selected.includes("XAU")) {
+        const fxOnly = dailySorted.filter((currency) => currency !== "XAU");
+        selected = ["XAU", fxOnly[0], fxOnly[fxOnly.length - 1]];
+      }
+
+      const direction = strongestFirst ? 1 : -1;
+      return selected.sort((left, right) => {
+        const difference = matrixState[right].D1 - matrixState[left].D1;
+        if (Math.abs(difference) >= 0.05) return difference * direction;
+        return left.localeCompare(right);
+      });
+    }
+    return sorted.filter((currency) => {
+      const signal = higherTimeframeFilter(matrixState[currency]);
+      return signalFilter === "ALL" || signal === signalFilter;
+    });
   }, [matrixState, signalFilter, strongestFirst]);
 
   const ranked = visibleCurrencies.slice(0, 6).map((currency) => ({
@@ -343,6 +400,12 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
       matrixState[currency].MN1 + matrixState[currency].W1 + matrixState[currency].D1
     ) / 3,
   }));
+  const intelligence = snapshot?.intelligence;
+  const verdictClass = intelligence?.verdict === "TECHNICAL_READY"
+    ? "mxVerdictReady"
+    : intelligence?.verdict === "NO_TRADE"
+      ? "mxVerdictStop"
+      : "mxVerdictCaution";
 
   return (
     <div className="mxPage" style={{ maxWidth: 1500, margin: "0 auto 36px" }}>
@@ -408,22 +471,28 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
         <div className="mxPanelHead">
           <div className="mxPanelTitle">
             <h2>Strength Matrix · Top-Down Analysis</h2>
-            <span>Priority: HTF signal → YTD → MN1 → W1 → D1 → intraday → TICK</span>
+            <span>Rows rank top-to-bottom: YTD → MN1 → W1 → D1 → intraday → TICK</span>
           </div>
           <div className="mxMatrixControls">
             <select
               aria-label="Filter currencies by higher-timeframe signal"
               value={signalFilter}
-              onChange={(event) => setSignalFilter(event.target.value as "ALL" | FilterSignal)}
+              onChange={(event) => setSignalFilter(event.target.value as "ALL" | "EXTREMES" | FilterSignal)}
             >
               <option value="ALL">All HTF signals</option>
+              <option value="EXTREMES">Today&apos;s Strongest + Weakest</option>
               <option value="STRONG">Strong only</option>
               <option value="NEUTRAL">Neutral only</option>
               <option value="WEAK">Weak only</option>
             </select>
-            <button type="button" onClick={() => setStrongestFirst((current) => !current)}>
-              {strongestFirst ? "Strongest → Weakest" : "Weakest → Strongest"}
-            </button>
+            <select
+              aria-label="Sort currencies by strength"
+              value={strongestFirst ? "STRONGEST_FIRST" : "WEAKEST_FIRST"}
+              onChange={(event) => setStrongestFirst(event.target.value === "STRONGEST_FIRST")}
+            >
+              <option value="STRONGEST_FIRST">Strongest → Weakest</option>
+              <option value="WEAKEST_FIRST">Weakest → Strongest</option>
+            </select>
           </div>
         </div>
         <div className="mxTableWrap">
@@ -479,6 +548,46 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <div className="mxPanel mxIntel">
+        <div className="mxPanelHead">
+          <div className="mxPanelTitle">
+            <h2>System Intelligence · XAUUSD</h2>
+            <span>Deterministic, advisory-only judgment. It cannot place orders.</span>
+          </div>
+          <strong className={verdictClass}>{intelligence?.verdict?.replaceAll("_", " ") ?? "WAITING FOR DATA"}</strong>
+        </div>
+        <div className="mxIntelBody">
+          <div className="mxIntelGrid">
+            <div className="mxIntelStat"><small>DIRECTION</small><strong>{intelligence?.direction ?? "—"}</strong></div>
+            <div className="mxIntelStat"><small>CONFIDENCE</small><strong>{intelligence ? `${intelligence.confidence}%` : "—"}</strong></div>
+            <div className="mxIntelStat"><small>REGIME</small><strong>{intelligence?.regime ?? "—"}</strong></div>
+            <div className="mxIntelStat"><small>XAU − USD GAP</small><strong>{intelligence ? intelligence.strength_gap.toFixed(1) : "—"}</strong></div>
+            <div className="mxIntelStat"><small>DATA QUALITY</small><strong>{intelligence ? `${intelligence.data_quality}%` : "—"}</strong></div>
+            <div className="mxIntelStat"><small>STRONGEST</small><strong>{intelligence ? `${intelligence.strongest.currency} ${intelligence.strongest.score.toFixed(1)}` : "—"}</strong></div>
+            <div className="mxIntelStat"><small>WEAKEST</small><strong>{intelligence ? `${intelligence.weakest.currency} ${intelligence.weakest.score.toFixed(1)}` : "—"}</strong></div>
+            <div className="mxIntelStat"><small>ENGINE</small><strong>{intelligence?.engine ?? "—"}</strong></div>
+          </div>
+          <div className="mxIntelReason">{intelligence?.reason ?? "Waiting for enough MT5 matrix data to form a judgment."}</div>
+          <div className="mxIntelRows">
+            <div className="mxIntelList">
+              <b>Evidence</b>
+              <span>Supporting: {intelligence?.supporting_timeframes?.join(" · ") || "none"}</span><br />
+              <span>Conflicting: {intelligence?.conflicting_timeframes?.join(" · ") || "none"}</span>
+            </div>
+            <div className="mxIntelList">
+              <b>Risk controls</b>
+              <span>{intelligence?.risk_flags?.map((flag) => flag.replaceAll("_", " ")).join(" · ") || "Waiting for assessment"}</span>
+            </div>
+          </div>
+          {intelligence?.candidate_pairs?.length ? (
+            <div className="mxIntelList">
+              <b>Highest relative-strength FX candidates</b>
+              <span>{intelligence.candidate_pairs.map((pair) => `${pair.symbol} ${pair.direction} (${pair.strength_gap.toFixed(1)})`).join(" · ")}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 

@@ -30,5 +30,7 @@ Thumbs.db
 *.log
 *.sqlite
 *.db
+*.sqlite3-shm
+*.sqlite3-wal
 scripts/_test_*.py
 scripts/_debug_*.py

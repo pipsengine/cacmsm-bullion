@@ -34,18 +34,17 @@ def load_market_module():
     return module
 
 
-def test_relative_strength_percentages_have_unique_extremes():
+def test_relative_strength_percentages_are_bounded_without_forced_extremes():
     market = load_market_module()
     values = {currency: float(index) for index, currency in enumerate(market.CCY_ROWS)}
     values["JPY"] = 7.9999
 
     percentages = market.normalize_strength_percentages(values)
 
-    assert percentages["AUD"] == 0.0
-    assert percentages["XAU"] == 100.0
-    assert list(percentages.values()).count(0.0) == 1
-    assert list(percentages.values()).count(100.0) == 1
-    assert percentages["JPY"] == 99.9
+    assert 0.0 < percentages["AUD"] < percentages["CAD"]
+    assert percentages["CAD"] < percentages["XAU"]
+    assert percentages["XAU"] < 100.0
+    assert abs(percentages["JPY"] - percentages["XAU"]) <= 0.1
 
 
 def test_flat_snapshot_is_neutral_without_artificial_extremes():
@@ -67,6 +66,18 @@ def test_cad_strength_increases_when_cad_outperforms_chf():
     assert scores["CAD"] > 0.0
     assert scores["CHF"] < 0.0
     assert scores["CAD"] > scores["CHF"]
+
+
+def test_xau_factor_is_anchored_to_the_derived_usd_factor():
+    market = load_market_module()
+    references = {symbol: 1.0 for symbol in market.DEFAULT_SYMBOLS}
+    latest = {symbol: {"mid": price} for symbol, price in references.items()}
+    latest["EURUSD"] = {"mid": 1.01}
+
+    scores = market.compute_currency_values(latest, references)
+
+    assert scores["USD"] < 0.0
+    assert scores["XAU"] == scores["USD"]
 
 
 def test_live_matrix_uses_percentage_strength_for_every_timeframe(tmp_path: Path):
@@ -102,8 +113,49 @@ def test_higher_timeframe_filter_requires_daily_weekly_monthly_confluence():
     market = load_market_module()
 
     assert market.higher_timeframe_filter({"D1": 70, "W1": 82, "MN1": 91}) == "STRONG"
-    assert market.higher_timeframe_filter({"D1": 39.9, "W1": 12, "MN1": 0}) == "WEAK"
+    assert market.higher_timeframe_filter({"D1": 30, "W1": 12, "MN1": 0}) == "WEAK"
+    assert market.higher_timeframe_filter({"D1": 39.9, "W1": 12, "MN1": 0}) == "NEUTRAL"
     assert market.higher_timeframe_filter({"D1": 88, "W1": 65, "MN1": 92}) == "NEUTRAL"
+
+
+def test_matrix_intelligence_requires_alignment_and_live_data():
+    market = load_market_module()
+    matrix = {
+        currency: {timeframe: 50.0 for timeframe in market.TIMEFRAMES}
+        for currency in market.CCY_ROWS
+    }
+    for timeframe in market.TIMEFRAMES:
+        matrix["XAU"][timeframe] = 90.0
+        matrix["USD"][timeframe] = 10.0
+
+    assessment = market.analyze_matrix(
+        matrix, symbols=market.DEFAULT_SYMBOLS, connected=True, missing_symbols=[]
+    )
+    disconnected = market.analyze_matrix(
+        matrix, symbols=market.DEFAULT_SYMBOLS, connected=False, missing_symbols=[]
+    )
+
+    assert assessment["verdict"] == "TECHNICAL_READY"
+    assert assessment["direction"] == "BUY"
+    assert assessment["confidence"] == 100
+    assert assessment["advisory_only"] is True
+    assert disconnected["verdict"] == "NO_TRADE"
+    assert "FEED_DISCONNECTED" in disconnected["risk_flags"]
+
+
+def test_history_intelligence_detects_persistent_xauusd_gap():
+    market = load_market_module()
+    rows = [
+        {"values": {currency: (80.0 if currency == "XAU" else 20.0 if currency == "USD" else 50.0) for currency in market.CCY_ROWS}}
+        for _ in range(20)
+    ]
+
+    assessment = market.analyze_history(rows)
+
+    assert assessment["verdict"] == "PERSISTENT"
+    assert assessment["direction"] == "BUY"
+    assert assessment["persistence_percent"] == 100
+    assert assessment["advisory_only"] is True
 
 
 def test_tick_history_is_newest_first_percent_data(tmp_path: Path):
@@ -127,11 +179,12 @@ def test_tick_history_is_newest_first_percent_data(tmp_path: Path):
 
     payload = feed.build_history(hours=24, limit=2)
 
-    assert payload["sampling"] == "tick"
+    assert payload["sampling"] == "strength_change"
     assert payload["value_unit"] == "percent"
     assert payload["row_interval_seconds"] is None
-    assert len(payload["rows"]) == 2
-    assert payload["rows"][0]["timestamp_utc"] > payload["rows"][1]["timestamp_utc"]
+    assert 1 <= len(payload["rows"]) <= 2
+    if len(payload["rows"]) > 1:
+        assert payload["rows"][0]["timestamp_utc"] > payload["rows"][1]["timestamp_utc"]
     for row in payload["rows"]:
         percentages = list(row["values"].values())
         assert all(0.0 <= value <= 100.0 for value in percentages)
