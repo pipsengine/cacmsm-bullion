@@ -5,6 +5,7 @@ import React from "react";
 export function Card({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <div
+      className="dashboardCard"
       style={{
         borderRadius: "var(--r-xl)",
         border: "1px solid rgba(255,255,255,0.06)",
@@ -12,7 +13,7 @@ export function Card({ title, children }: { title?: string; children: React.Reac
         padding: 16
       }}
     >
-      {title ? <div style={{ fontWeight: 900, marginBottom: 10 }}>{title}</div> : null}
+      {title ? <div className="dashboardCardTitle">{title}</div> : null}
       {children}
     </div>
   );
@@ -21,6 +22,7 @@ export function Card({ title, children }: { title?: string; children: React.Reac
 export function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div
+      className="kpiCard"
       style={{
         borderRadius: "var(--r-md)",
         border: "1px solid rgba(255,255,255,0.06)",
@@ -38,6 +40,7 @@ export function Kpi({ label, value, hint }: { label: string; value: string; hint
 export function JsonBlock({ data }: { data: unknown }) {
   return (
     <pre
+      className="jsonBlock"
       style={{
         margin: 0,
         padding: 12,

@@ -33,7 +33,7 @@ function Pill({ children, tone }: { children: React.ReactNode; tone?: "ok" | "wa
           : "var(--muted)";
   return (
     <div
-      className="appTopbar"
+      className="topbarPill"
       style={{
         padding: "8px 12px",
         borderRadius: 999,
@@ -136,6 +136,7 @@ export default function Topbar() {
 
   return (
     <div
+      className="appTopbar"
       style={{
         height: 70,
         display: "flex",

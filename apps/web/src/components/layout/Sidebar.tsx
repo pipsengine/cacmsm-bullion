@@ -1,12 +1,26 @@
-/* eslint-disable @next/next/no-img-element */
 "use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { NAV, type NavGroup } from "../../config/navigation";
 
-type ControlStatus = { running: boolean; mode: string; kill: boolean };
+type ControlStatus = {
+  running: boolean;
+  mode: string | { active?: string };
+  kill: boolean;
+};
+
+type ActiveMarketAccount = {
+  account_login?: number;
+  account_server?: string;
+  mt5_connected?: boolean;
+};
+
+function activeMode(mode: ControlStatus["mode"] | undefined) {
+  if (typeof mode === "string") return mode.toLowerCase();
+  return mode?.active?.toLowerCase() ?? "demo";
+}
 
 function Pill({ label, active }: { label: string; active?: boolean }) {
   return (
@@ -154,7 +168,9 @@ function NavGroupBlock({
 export default function Sidebar() {
   const pathname = usePathname();
   const [status, setStatus] = useState<ControlStatus | null>(null);
+  const [marketAccount, setMarketAccount] = useState<ActiveMarketAccount | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>(() => {
     const initial: Record<string, boolean> = {};
     for (const g of NAV) {
@@ -167,16 +183,11 @@ export default function Sidebar() {
     setCollapsedMap((prev) => ({ ...prev, [title]: !prev[title] }));
   };
 
-  const setGroupCollapsedByItemHref = (href: string) => {
-    const group = NAV.find((g) => g.items.some((i) => i.href === href));
-    if (!group) return;
-    if (!collapsedMap[group.title]) return;
-    setCollapsedMap((prev) => ({ ...prev, [group.title]: false }));
-  };
-
   useEffect(() => {
     if (!pathname) return;
-    setGroupCollapsedByItemHref(pathname);
+    const group = NAV.find((candidate) => candidate.items.some((item) => item.href === pathname));
+    if (!group) return;
+    setCollapsedMap((prev) => (prev[group.title] ? { ...prev, [group.title]: false } : prev));
   }, [pathname]);
 
   const refresh = async () => {
@@ -194,6 +205,24 @@ export default function Sidebar() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    const refreshAccount = async () => {
+      try {
+        const response = await fetch("/api/market/status", { cache: "no-store" });
+        if (response.ok && alive) setMarketAccount((await response.json()) as ActiveMarketAccount);
+      } catch {
+        if (alive) setMarketAccount(null);
+      }
+    };
+    void refreshAccount();
+    const id = setInterval(refreshAccount, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
   const postControl = async (path: string, label: string) => {
     setBusy(label);
     try {
@@ -204,7 +233,18 @@ export default function Sidebar() {
     }
   };
 
-  const mode = status?.mode ?? "demo";
+  const mode = activeMode(status?.mode);
+  const visibleNav = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return NAV;
+
+    return NAV.map((group) => ({
+      ...group,
+      items: group.items.filter((item) =>
+        `${group.title} ${item.title} ${item.badge ?? ""}`.toLowerCase().includes(normalized)
+      )
+    })).filter((group) => group.items.length > 0);
+  }, [query]);
 
   return (
     <aside
@@ -272,29 +312,48 @@ export default function Sidebar() {
         }}
       >
         <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 800, letterSpacing: "0.08em" }}>
-          ACTIVE ACCOUNT
+          ACTIVE MT5 ACCOUNT
         </div>
-        <div style={{ marginTop: 8, fontWeight: 700, color: "var(--muted)" }}>
-          No account selected
-        </div>
-        <div style={{ marginTop: 4, fontSize: 12, color: "var(--muted)" }}>
-          Select an MT5 account from the sync panel
-        </div>
+        {marketAccount?.mt5_connected && marketAccount.account_login ? (
+          <>
+            <div style={{ marginTop: 8, fontWeight: 800, color: "var(--text)" }}>
+              #{marketAccount.account_login}
+            </div>
+            <div style={{ marginTop: 4, overflow: "hidden", color: "var(--muted)", fontSize: 12, textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={marketAccount.account_server}>
+              {marketAccount.account_server || "Connected terminal"}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ marginTop: 8, fontWeight: 700, color: "var(--muted)" }}>
+              No account connected
+            </div>
+            <div style={{ marginTop: 4, fontSize: 12, color: "var(--muted)" }}>
+              Connect an MT5 terminal to view live data
+            </div>
+          </>
+        )}
       </div>
 
-      <div
+      <input
+        className="sidebarSearch"
+        aria-label="Search pages and accounts"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Search pages, accounts..."
         style={{
+          display: "block",
+          width: "calc(100% - 16px)",
           margin: "0 8px 12px",
           padding: "10px 12px",
           borderRadius: 14,
           border: "1px solid rgba(255,255,255,0.06)",
           background: "rgba(255,255,255,0.03)",
           color: "var(--muted)",
-          fontSize: 13
+          fontSize: 13,
+          outline: "none"
         }}
-      >
-        Search pages, accounts...
-      </div>
+      />
 
       <div style={{ margin: "0 8px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         {[
@@ -325,7 +384,7 @@ export default function Sidebar() {
       </div>
 
       <div style={{ height: "calc(100vh - 420px)", overflowY: "auto", paddingRight: 6 }}>
-        {NAV.map((group) => (
+        {visibleNav.map((group) => (
           <NavGroupBlock
             key={group.title}
             group={group}
@@ -334,6 +393,11 @@ export default function Sidebar() {
             pathname={pathname}
           />
         ))}
+        {visibleNav.length === 0 ? (
+          <div style={{ padding: "18px", color: "var(--muted)", fontSize: 12, textAlign: "center" }}>
+            No matching pages
+          </div>
+        ) : null}
       </div>
 
       <div

@@ -3,11 +3,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { findNavItem } from "../../../config/navigation";
-import { Card, JsonBlock, Kpi } from "../../../components/ui/Cards";
+import { Card, Kpi } from "../../../components/ui/Cards";
+import { DecisionTable, ExecutionTable } from "../../../components/ui/ActivityTables";
 import MarketMatrixPage from "../../../components/pages/MarketMatrixPage";
 import History24hPage from "../../../components/pages/History24hPage";
 import Mt5TerminalPage from "../../../components/pages/Mt5TerminalPage";
 import Mt5AccountSyncPage from "../../../components/pages/Mt5AccountSyncPage";
+import MarketWatchPage from "../../../components/pages/MarketWatchPage";
+import SignalPipelinePage from "../../../components/pages/SignalPipelinePage";
+import DecisionQueuePage from "../../../components/pages/DecisionQueuePage";
 
 type ControlStatusModeShape =
   | string
@@ -48,13 +52,13 @@ function toActiveMode(mode: ControlStatusModeShape | undefined | null): string {
 
 function Title({ group, title }: { group: string; title: string }) {
   return (
-    <div style={{ marginBottom: 14 }}>
-      <div style={{ color: "var(--muted)", fontSize: 12 }}>Home / {group}</div>
-      <div style={{ fontSize: 30, fontWeight: 900, marginTop: 6 }}>{title}</div>
-      <div style={{ color: "var(--muted)", marginTop: 6, maxWidth: 900 }}>
+    <header className="pageHeading">
+      <div className="breadcrumbs">Home / {group}</div>
+      <h1>{title}</h1>
+      <div className="pageSubtitle">
         Key pages are wired to live service APIs; the remaining routes are ready for domain widgets without changing routing.
       </div>
-    </div>
+    </header>
   );
 }
 
@@ -78,6 +82,15 @@ export default function AnyPage() {
   if (pathname === "/execution/mt5-account-sync") {
     return <Mt5AccountSyncPage />;
   }
+  if (pathname === "/trading/market-watch") {
+    return <MarketWatchPage />;
+  }
+  if (pathname === "/trading/signal-pipeline") {
+    return <SignalPipelinePage />;
+  }
+  if (pathname === "/trading/decision-queue") {
+    return <DecisionQueuePage />;
+  }
 
   return <GenericPage pathname={pathname} />;
 }
@@ -87,8 +100,8 @@ function GenericPage({ pathname }: { pathname: string }) {
 
   const [control, setControl] = useState<ControlStatus | null>(null);
   const [health, setHealth] = useState<HealthSummary | null>(null);
-  const [decisions, setDecisions] = useState<any>(null);
-  const [executions, setExecutions] = useState<any>(null);
+  const [decisions, setDecisions] = useState<unknown>(null);
+  const [executions, setExecutions] = useState<unknown>(null);
 
   useEffect(() => {
     let alive = true;
@@ -163,10 +176,10 @@ function GenericPage({ pathname }: { pathname: string }) {
   ];
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
+    <div className="dashboardPage">
       <Title group={group} title={item.title} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
+      <div className="kpiGrid">
         {kpi.map((x) => (
           <Kpi key={x.label} label={x.label} value={x.value} hint={x.hint} />
         ))}
@@ -183,25 +196,31 @@ function GenericPage({ pathname }: { pathname: string }) {
       ) : null}
 
       {pathname === "/dashboard/executive-overview" ? (
-        <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 14 }}>
-          <Card title="Decision queue (latest)">{decisions ? <JsonBlock data={decisions} /> : <div>Loading...</div>}</Card>
-          <Card title="Execution logs (latest)">{executions ? <JsonBlock data={executions} /> : <div>Loading...</div>}</Card>
+        <div className="overviewGrid">
+          <Card title="Decision queue (latest)"><DecisionTable data={decisions} /></Card>
+          <Card title="Execution logs (latest)"><ExecutionTable data={executions} /></Card>
         </div>
       ) : null}
 
       {pathname === "/trading/decision-queue" ? (
-        <Card title="Decision queue (latest)">{decisions ? <JsonBlock data={decisions} /> : <div>Loading...</div>}</Card>
+        <Card title="Decision queue (latest)"><DecisionTable data={decisions} /></Card>
       ) : null}
 
       {pathname === "/execution/execution-logs" ? (
-        <Card title="Execution logs (latest)">{executions ? <JsonBlock data={executions} /> : <div>Loading...</div>}</Card>
+        <Card title="Execution logs (latest)"><ExecutionTable data={executions} /></Card>
       ) : null}
 
-      <Card title="Page implementation status">
-        <div style={{ color: "var(--muted)" }}>
-          This route is implemented and navigable. Add domain widgets here without changing the repo structure.
-        </div>
-      </Card>
+      {![
+        "/dashboard/executive-overview",
+        "/trading/decision-queue",
+        "/execution/execution-logs"
+      ].includes(pathname) ? (
+        <Card title="Page implementation status">
+          <div style={{ color: "var(--muted)" }}>
+            This route is implemented and navigable. Add domain widgets here without changing the repo structure.
+          </div>
+        </Card>
+      ) : null}
     </div>
   );
 }
