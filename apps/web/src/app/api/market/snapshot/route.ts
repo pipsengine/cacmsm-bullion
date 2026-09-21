@@ -13,7 +13,15 @@ export async function GET() {
       return new NextResponse(text, { status: res.status, headers: { "content-type": "application/json" } });
     }
   } catch { /* use the local terminal fallback */ }
-  return NextResponse.json(await readMt5MarketData("snapshot"), {
-    headers: { "cache-control": "no-store", "x-market-source": "mt5-terminal-fallback" },
-  });
+  try {
+    return NextResponse.json(await readMt5MarketData("snapshot"), {
+      headers: { "cache-control": "no-store", "x-market-source": "mt5-terminal-fallback" },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { ok: false, mt5_connected: false, error: message },
+      { status: 503, headers: { "cache-control": "no-store" } },
+    );
+  }
 }

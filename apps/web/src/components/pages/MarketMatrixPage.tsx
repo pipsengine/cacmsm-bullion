@@ -337,7 +337,7 @@ export default function MarketMatrixPage({ onOpenHistory }: { onOpenHistory?: ()
     }
 
     fetchOnce();
-    pollTimer = setInterval(fetchOnce, 750);
+    pollTimer = setInterval(fetchOnce, 5_000);
 
     return () => {
       alive = false;

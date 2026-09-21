@@ -9,7 +9,7 @@ import statistics
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import MetaTrader5 as mt5
 
@@ -34,7 +34,11 @@ FX_PAIRS = {
     if len(symbol) == 6 and symbol[:3] in FX_CURRENCIES and symbol[3:] in FX_CURRENCIES
 }
 TIMEFRAMES = ["TICK", "M1", "M5", "M15", "M30", "H1", "H4", "H6", "H8", "H12", "D1", "W1", "MN1", "YTD"]
-LAGOS = ZoneInfo("Africa/Lagos")
+try:
+    LAGOS = ZoneInfo("Africa/Lagos")
+except ZoneInfoNotFoundError:
+    # Windows does not ship the IANA database; Lagos has no daylight-saving time.
+    LAGOS = timezone(timedelta(hours=1), name="Africa/Lagos")
 
 
 def iso(epoch: float) -> str:

@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+function mt5PythonCommand(): string {
+  return process.env.MT5_PYTHON?.trim() || (process.platform === "win32" ? "py" : "python");
+}
+
 export type Mt5TerminalSnapshot = {
   ok: boolean;
   connected: boolean;
@@ -25,7 +29,7 @@ export type Mt5TerminalSnapshot = {
 };
 
 export async function readMt5Terminal(): Promise<Mt5TerminalSnapshot> {
-  const python = process.env.MT5_PYTHON?.trim() || "python";
+  const python = mt5PythonCommand();
   const script = process.env.MT5_SNAPSHOT_SCRIPT?.trim()
     || path.resolve(process.cwd(), "../../scripts/mt5_snapshot.py");
   try {
@@ -67,7 +71,7 @@ export async function readMt5MarketData(mode: "status" | "snapshot" | "history",
 }
 
 async function readMt5MarketDataUncached(mode: "status" | "snapshot" | "history", hours: number, limit: number): Promise<Record<string, unknown>> {
-  const python = process.env.MT5_PYTHON?.trim() || "python";
+  const python = mt5PythonCommand();
   const script = process.env.MT5_MARKET_SCRIPT?.trim()
     || path.resolve(process.cwd(), "../../scripts/mt5_market_data.py");
   try {

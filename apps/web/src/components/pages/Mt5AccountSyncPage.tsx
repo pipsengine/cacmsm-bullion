@@ -680,7 +680,7 @@ const EMPTY_FORM: FormState = {
   account_password: "",
   account_mode: "DEMO",
   currency: "USD",
-  leverage: "100",
+  leverage: "1:100",
   company: "",
   status: "ACTIVE",
   is_active: true,
@@ -691,6 +691,13 @@ const EMPTY_FORM: FormState = {
   notes: ""
 };
 
+function parseLeverage(value: string): number {
+  const match = value.trim().match(/^(?:1\s*:\s*)?(\d+)$/);
+  if (!match) return 0;
+  const leverage = Number(match[1]);
+  return Number.isSafeInteger(leverage) && leverage > 0 ? leverage : 0;
+}
+
 function formToInput(f: FormState) {
   return {
     broker_name: f.broker_name.trim(),
@@ -699,7 +706,7 @@ function formToInput(f: FormState) {
     account_password: f.account_password || null,
     account_mode: f.account_mode,
     currency: f.currency.trim() || "USD",
-    leverage: parseInt(f.leverage || "0", 10) || 0,
+    leverage: parseLeverage(f.leverage),
     company: f.company.trim() || null,
     status: f.status ?? (f.is_active ? "ACTIVE" : "INACTIVE"),
     is_active: f.is_active,
@@ -731,6 +738,7 @@ export default function Mt5AccountSyncPage() {
   const [filters, setFilters] = useState<{ modes: AccountMode[]; statuses: AccountStatus[] }>({ modes: [], statuses: [] });
 
   const syncingIdsRef = useRef<Set<string>>(new Set());
+  const scheduledSyncRef = useRef<(accountId: string) => void>(() => {});
 
   const LS_DISMISSED = "mas.errors.dismissed.v1";
   const hashString = (s: string): string => {
@@ -892,7 +900,7 @@ export default function Mt5AccountSyncPage() {
         next.account_mode = entry.default_mode;
       }
       if (typeof entry.default_leverage === "number" && !prev.leverage.trim()) {
-        next.leverage = String(entry.default_leverage);
+        next.leverage = `1:${entry.default_leverage}`;
       }
       if (!prev.display_name.trim()) {
         const modeTag = entry.default_mode ? ` · ${entry.default_mode}` : "";
@@ -917,7 +925,7 @@ export default function Mt5AccountSyncPage() {
       account_password: "",
       account_mode: acc.account_mode,
       currency: acc.currency,
-      leverage: String(acc.leverage),
+      leverage: `1:${acc.leverage}`,
       company: acc.company ?? "",
       status: acc.status,
       is_active: acc.is_active,
@@ -937,6 +945,9 @@ export default function Mt5AccountSyncPage() {
       const input = { ...raw, broker_name: normalizeBrokerName(raw.broker_name) };
       if (!input.broker_name || !input.account_login || !input.account_server) {
         throw new Error("Broker, Login, and Server are required.");
+      }
+      if (!input.leverage) {
+        throw new Error("Leverage must be a positive ratio such as 1:1500.");
       }
       if (editingId) {
         const updateInput = form.account_password ? input : { ...input, account_password: undefined };
@@ -986,7 +997,11 @@ export default function Mt5AccountSyncPage() {
     }
   };
 
-  const triggerSync = async (accountId: string) => {
+  const triggerSync = async (
+    accountId: string,
+    trigger: "MANUAL" | "SCHEDULED" = "MANUAL",
+    notify = true,
+  ) => {
     if (syncingIdsRef.current.has(accountId)) return;
     syncingIdsRef.current.add(accountId);
     const idx = accounts.findIndex((a) => a.id === accountId);
@@ -998,16 +1013,45 @@ export default function Mt5AccountSyncPage() {
     try {
       const resp = await api<{ ok: boolean; run: SyncRun; message: string }>(`/api/mt5-account-sync/accounts/${accountId}/sync`, {
         method: "POST",
-        body: JSON.stringify({ trigger: "MANUAL" })
+        body: JSON.stringify({ trigger })
       });
-      showToast("ok", resp?.message ?? "Sync complete.");
+      if (notify) showToast("ok", resp?.message ?? "Sync complete.");
       await loadDashboard();
     } catch (e: any) {
-      showToast("err", e?.message ?? String(e));
+      if (notify) showToast("err", e?.message ?? String(e));
+      else await loadDashboard();
     } finally {
       syncingIdsRef.current.delete(accountId);
     }
   };
+
+  scheduledSyncRef.current = (accountId: string) => {
+    void triggerSync(accountId, "SCHEDULED", false);
+  };
+
+  useEffect(() => {
+    const enabled = accounts.filter((account) => account.is_active && account.sync_enabled);
+    if (!enabled.length) return;
+
+    const now = Date.now();
+    const dueIn = enabled.map((account) => {
+      const intervalMs = Math.max(5, account.sync_interval_seconds) * 1000;
+      const lastSyncMs = account.last_sync_at ? new Date(account.last_sync_at).getTime() : 0;
+      return Math.max(0, intervalMs - (now - lastSyncMs));
+    });
+    const timer = window.setTimeout(() => {
+      const currentTime = Date.now();
+      for (const account of enabled) {
+        const intervalMs = Math.max(5, account.sync_interval_seconds) * 1000;
+        const lastSyncMs = account.last_sync_at ? new Date(account.last_sync_at).getTime() : 0;
+        if (currentTime - lastSyncMs >= intervalMs) {
+          scheduledSyncRef.current(account.id);
+        }
+      }
+    }, Math.min(...dueIn));
+
+    return () => window.clearTimeout(timer);
+  }, [accounts]);
 
   const toggleModeFilter = (m: AccountMode) => {
     setFilters((f) => ({ ...f, modes: f.modes.includes(m) ? f.modes.filter((x) => x !== m) : [...f.modes, m] }));
@@ -1020,7 +1064,7 @@ export default function Mt5AccountSyncPage() {
   const syncAllEnabled = async () => {
     const list = accounts.filter((a) => a.sync_enabled);
     showToast("ok", `Queued ${list.length} accounts for sync…`);
-    for (const a of list) void triggerSync(a.id);
+    for (const a of list) void triggerSync(a.id, "MANUAL", false);
   };
 
   const kpis = useMemo(() => {
@@ -1467,12 +1511,11 @@ export default function Mt5AccountSyncPage() {
               <div className="masField">
                 <label>Leverage (1:X)</label>
                 <input
-                  type="number"
-                  min="1"
-                  step="1"
+                  type="text"
+                  inputMode="text"
                   value={form.leverage}
                   onChange={(e) => setForm((f) => ({ ...f, leverage: e.target.value }))}
-                  placeholder="e.g. 100, 500"
+                  placeholder="e.g. 1:1500"
                 />
               </div>
               <div className="masField">
